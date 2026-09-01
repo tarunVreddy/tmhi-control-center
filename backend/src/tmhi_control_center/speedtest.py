@@ -18,8 +18,21 @@ logger = logging.getLogger(__name__)
 
 CLOUDFLARE_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
 CLOUDFLARE_UPLOAD_URL = "https://speed.cloudflare.com/__up"
-MAX_TRANSFER_REQUEST_BYTES = 25_000_000
+# Cloudflare's speed endpoint rejects large single requests with HTTP 429 once an
+# address has been active, while small requests keep succeeding at high
+# concurrency. 25 MB requests were the cause of both the 429 failures and the
+# badly under-reported throughput; 5 MB requests are served reliably.
+MAX_TRANSFER_REQUEST_BYTES = 5_000_000
 UPLOAD_STREAM_CHUNK_BYTES = 64 * 1024
+
+# A single stream cannot fill a fast link, and one long request per direction
+# measures mostly TCP slow-start. Several smaller concurrent requests reach line
+# rate and let the sampler below see a steady state.
+DOWNLOAD_STREAMS = 8
+UPLOAD_STREAMS = 4
+THROUGHPUT_SAMPLE_SECONDS = 0.25
+STEADY_STATE_WINDOW_SECONDS = 1.0
+TRANSFER_MAX_ATTEMPTS = 4
 INTERVAL_CADENCE_MINUTES = {
     "every_5_minutes": 5,
     "every_10_minutes": 10,
@@ -83,6 +96,10 @@ class SpeedTestBusyError(SpeedTestError):
     pass
 
 
+class _RateLimited(RuntimeError):
+    """Provider answered a transfer request with HTTP 429."""
+
+
 def transfer_chunks(total_bytes: int) -> list[int]:
     remaining = max(0, int(total_bytes))
     chunks: list[int] = []
@@ -94,8 +111,9 @@ def transfer_chunks(total_bytes: int) -> list[int]:
 
 
 class ZeroByteStream(httpx.AsyncByteStream):
-    def __init__(self, byte_count: int) -> None:
+    def __init__(self, byte_count: int, on_progress: Any = None) -> None:
         self.byte_count = max(0, int(byte_count))
+        self._on_progress = on_progress
 
     async def __aiter__(self):
         remaining = self.byte_count
@@ -104,6 +122,43 @@ class ZeroByteStream(httpx.AsyncByteStream):
             chunk_size = min(len(payload), remaining)
             yield payload[:chunk_size]
             remaining -= chunk_size
+            if self._on_progress is not None:
+                # Report as the body is sent. Crediting a whole request only when
+                # it completes quantises the samples to the request size, which
+                # reads as a fixed, wrong rate rather than the real one.
+                self._on_progress(chunk_size)
+
+
+def steady_state_mbps(
+    samples: list[float],
+    total_bytes: int,
+    elapsed: float,
+) -> float:
+    """Throughput of the fastest sustained window, not the whole-run average.
+
+    Dividing total bytes by total elapsed time charges the result for TCP
+    slow-start at the start and for stragglers at the end, once most workers have
+    drained the shared budget. On a fast link both are a large share of a short
+    run, so the average reads far below the real rate. The peak sustained window
+    ignores both.
+    """
+    average = total_bytes * 8 / elapsed / 1_000_000
+    width = max(1, round(STEADY_STATE_WINDOW_SECONDS / THROUGHPUT_SAMPLE_SECONDS))
+    if len(samples) < width:
+        # Too short to observe a steady state; the average is all we have.
+        return average
+    windows = [
+        sum(samples[start:start + width]) / width
+        for start in range(len(samples) - width + 1)
+    ]
+    peak = max(windows)
+    # The peak window alone is biased high: upload bytes are counted as the kernel
+    # accepts them, which can briefly outrun the wire. Take the median of the
+    # windows that are actually carrying traffic, which still excludes slow-start
+    # and the straggler tail but is not moved by a single fast sample.
+    active = [value for value in windows if value >= peak * 0.5]
+    estimate = statistics.median(active) if active else peak
+    return max(estimate, average)
 
 
 def profile_summary(profile: str) -> dict[str, Any]:
@@ -208,16 +263,41 @@ def next_scheduled_slot(
     return target.astimezone(timezone.utc), next_index
 
 
+def _build_transfer_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(180.0, connect=10.0),
+        limits=httpx.Limits(
+            max_connections=DOWNLOAD_STREAMS,
+            max_keepalive_connections=DOWNLOAD_STREAMS,
+        ),
+        follow_redirects=True,
+        headers={"User-Agent": "TMHI-Control-Center/0.1 speed-history"},
+    )
+
+
 class LowImpactSpeedTest:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(180.0, connect=10.0),
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=1),
-            follow_redirects=True,
-            headers={"User-Agent": "TMHI-Control-Center/0.1 speed-history"},
-        )
+        self._client = client or _build_transfer_client()
         self._owns_client = client is None
         self._lock = asyncio.Lock()
+        self._progress: dict[str, int] = {"downloaded": 0, "uploaded": 0}
+
+    @property
+    def progress(self) -> dict[str, int]:
+        """Bytes moved so far, so a failed run can report what it really used."""
+        return dict(self._progress)
+
+    async def _reset_connections(self) -> None:
+        """Begin each run on fresh connections.
+
+        Cloudflare rate-limits the individual connection, not just the address, so
+        a pooled connection that has been limited stays limited: every later run
+        then fails on its first request until the process restarts.
+        """
+        if not self._owns_client:
+            return
+        await self._client.aclose()
+        self._client = _build_transfer_client()
 
     @property
     def running(self) -> bool:
@@ -235,6 +315,8 @@ class LowImpactSpeedTest:
             raise SpeedTestError(f"Unknown speed test profile: {profile}")
 
         async with self._lock:
+            self._progress = {"downloaded": 0, "uploaded": 0}
+            await self._reset_connections()
             started_at = datetime.now(timezone.utc)
             started = time.perf_counter()
             latency_samples = await self._measure_latency(selected["latency_samples"])
@@ -281,47 +363,124 @@ class LowImpactSpeedTest:
             samples.append((time.perf_counter() - started) * 1000)
         return samples
 
-    async def _measure_download(self, byte_count: int) -> tuple[float, int]:
-        received = 0
+    async def _parallel_transfer(
+        self,
+        byte_count: int,
+        streams: int,
+        counter: str,
+        issue: Any,
+    ) -> tuple[float, int]:
+        """Spend a shared byte budget across concurrent workers.
+
+        Every worker claims the next bounded request from one budget, so the total
+        volume still matches the selected profile no matter how many run at once.
+        Progress is published as it happens so a run that fails part way can still
+        report the data it used.
+        """
+        budget = max(0, int(byte_count))
+        if budget <= 0:
+            return 0.0, 0
+        remaining = {"bytes": budget, "index": 0}
+        lock = asyncio.Lock()
+        samples: list[float] = []
+
+        async def worker() -> None:
+            while True:
+                async with lock:
+                    if remaining["bytes"] <= 0:
+                        return
+                    take = min(MAX_TRANSFER_REQUEST_BYTES, remaining["bytes"])
+                    remaining["bytes"] -= take
+                    index = remaining["index"]
+                    remaining["index"] += 1
+                for attempt in range(TRANSFER_MAX_ATTEMPTS):
+                    try:
+                        moved = await issue(take, index)
+                    except _RateLimited:
+                        if attempt == TRANSFER_MAX_ATTEMPTS - 1:
+                            raise SpeedTestError(
+                                "The speed test provider rate limited the transfer "
+                                "(HTTP 429) after several retries"
+                            )
+                        await asyncio.sleep(0.25 * (2 ** attempt))
+                        continue
+                    self._progress[counter] += moved
+                    break
+
+        async def sample(stop: asyncio.Event) -> None:
+            previous, marked = self._progress[counter], time.perf_counter()
+            while not stop.is_set():
+                await asyncio.sleep(THROUGHPUT_SAMPLE_SECONDS)
+                now, current = time.perf_counter(), self._progress[counter]
+                span = now - marked
+                if span > 0:
+                    samples.append((current - previous) * 8 / span / 1_000_000)
+                previous, marked = current, now
+
+        opened = self._progress[counter]
+        stop = asyncio.Event()
+        sampler = asyncio.create_task(sample(stop))
         started = time.perf_counter()
-        for index, chunk_size in enumerate(transfer_chunks(byte_count)):
+        try:
+            await asyncio.gather(*(worker() for _ in range(max(1, streams))))
+        finally:
+            stop.set()
+            sampler.cancel()
+        elapsed = max(time.perf_counter() - started, 0.001)
+        moved = self._progress[counter] - opened
+        return steady_state_mbps(samples, moved, elapsed), moved
+
+    async def _measure_download(self, byte_count: int) -> tuple[float, int]:
+        async def issue(take: int, index: int) -> int:
             query = urlencode(
                 {
-                    "bytes": chunk_size,
+                    "bytes": take,
                     "measId": f"tmhi-down-{time.time_ns()}-{index}",
                 }
             )
+            received = 0
             async with self._client.stream(
                 "GET",
                 f"{CLOUDFLARE_DOWNLOAD_URL}?{query}",
                 headers={"Cache-Control": "no-cache"},
             ) as response:
+                if response.status_code == 429:
+                    raise _RateLimited()
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes():
                     received += len(chunk)
-        elapsed = max(time.perf_counter() - started, 0.001)
+            return received
+
+        mbps, received = await self._parallel_transfer(
+            byte_count, DOWNLOAD_STREAMS, "downloaded", issue
+        )
         if received <= 0:
             raise SpeedTestError("The download sample returned no data")
-        return received * 8 / elapsed / 1_000_000, received
+        return mbps, received
 
     async def _measure_upload(self, byte_count: int) -> tuple[float, int]:
-        uploaded = 0
-        started = time.perf_counter()
-        for index, chunk_size in enumerate(transfer_chunks(byte_count)):
+        def record(count: int) -> None:
+            self._progress["uploaded"] += count
+
+        async def issue(take: int, index: int) -> int:
             response = await self._client.post(
                 CLOUDFLARE_UPLOAD_URL,
                 params={"measId": f"tmhi-up-{time.time_ns()}-{index}"},
-                content=ZeroByteStream(chunk_size),
+                content=ZeroByteStream(take, record),
                 headers={
                     "Content-Type": "application/octet-stream",
-                    "Content-Length": str(chunk_size),
+                    "Content-Length": str(take),
                     "Cache-Control": "no-cache",
                 },
             )
+            if response.status_code == 429:
+                raise _RateLimited()
             response.raise_for_status()
-            uploaded += chunk_size
-        elapsed = max(time.perf_counter() - started, 0.001)
-        return uploaded * 8 / elapsed / 1_000_000, uploaded
+            return 0  # already counted incrementally as the body was sent
+
+        return await self._parallel_transfer(
+            byte_count, UPLOAD_STREAMS, "uploaded", issue
+        )
 
 
 class SpeedTestManager:
@@ -394,6 +553,9 @@ class SpeedTestManager:
         except SpeedTestBusyError:
             raise
         except Exception as exc:
+            # A failed run still moved real data; reporting zero hid hundreds of
+            # megabytes per attempt from the usage estimate.
+            progress = self.runner.progress
             failure = {
                 "observed_at": observed_at.isoformat(),
                 "profile": profile,
@@ -403,8 +565,8 @@ class SpeedTestManager:
                 "upload_mbps": None,
                 "latency_ms": None,
                 "jitter_ms": None,
-                "bytes_downloaded": 0,
-                "bytes_uploaded": 0,
+                "bytes_downloaded": progress.get("downloaded", 0),
+                "bytes_uploaded": progress.get("uploaded", 0),
                 "duration_seconds": 0,
                 "error": str(exc),
             }

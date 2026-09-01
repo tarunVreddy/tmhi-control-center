@@ -95,8 +95,8 @@ def test_large_profiles_and_five_minute_usage_are_explicit() -> None:
     assert profile["download_bytes"] == 100_000_000
     assert profile["upload_bytes"] == 25_000_000
     assert profile["estimated_megabytes"] == 125.0
-    assert profile["download_requests"] == 4
-    assert profile["upload_requests"] == 1
+    assert profile["download_requests"] == len(transfer_chunks(100_000_000))
+    assert profile["upload_requests"] == len(transfer_chunks(25_000_000))
     assert usage["runs_per_day"] == 288
     assert usage["estimated_daily_bytes"] == profile["estimated_bytes"] * 288
     assert profile_summary("extended")["estimated_bytes"] == 300_000_000
@@ -144,13 +144,18 @@ async def test_accurate_profile_uses_bounded_requests() -> None:
 
     assert result["bytes_downloaded"] == 100_000_000
     assert result["bytes_uploaded"] == 25_000_000
-    assert download_requests == [25_000_000] * 4
-    assert upload_requests == [25_000_000]
+    # Workers share the budget concurrently, so request order is not
+    # deterministic. What matters is the total volume and that every individual
+    # request stays within the provider's accepted size.
+    assert sum(download_requests) == 100_000_000
+    assert max(download_requests) <= MAX_TRANSFER_REQUEST_BYTES
+    assert sum(upload_requests) == 25_000_000
+    assert max(upload_requests) <= MAX_TRANSFER_REQUEST_BYTES
 
 
 def test_transfer_chunks_preserve_requested_volume() -> None:
     chunks = transfer_chunks(1_000_000_000)
 
     assert sum(chunks) == 1_000_000_000
-    assert len(chunks) == 40
+    assert len(chunks) == 1_000_000_000 // MAX_TRANSFER_REQUEST_BYTES
     assert max(chunks) == MAX_TRANSFER_REQUEST_BYTES
