@@ -175,6 +175,7 @@ const ids = [
   "speedTestLatency",
   "speedTestLatencyDetail",
   "speedTestNextRun",
+  "speedTestProfileLabel",
   "speedTestProfile",
   "speedTestRetention",
   "speedTestRunButton",
@@ -1470,6 +1471,20 @@ function renderSpeedTests() {
       : cadenceLabels[cadence] || "Schedule unknown",
     status.running || state.speedTestBusy ? "warn" : cadence === "disabled" ? "muted" : "good"
   );
+  // Surface the configured test size next to the heading: it decides how much
+  // data each run spends, and it was otherwise only visible in Settings.
+  const profile = status.profile || {};
+  const profileLabel = profile.label || humanize(profileKey);
+  const perRunBytes = Number.isFinite(profile.estimated_bytes)
+    ? profile.estimated_bytes
+    : SPEED_TEST_PROFILE_BYTES[profileKey] || 0;
+  setText(
+    els.speedTestProfileLabel,
+    perRunBytes
+      ? `${profileLabel} profile \u00b7 ${formatDataSize(perRunBytes)} per test`
+      : `${profileLabel} profile`,
+  );
+
   setText(els.speedTestDownload, formatSpeedResult(latest?.download_mbps));
   setText(els.speedTestUpload, formatSpeedResult(latest?.upload_mbps));
   setText(els.speedTestLatency, formatMillisecondResult(latest?.latency_ms));
