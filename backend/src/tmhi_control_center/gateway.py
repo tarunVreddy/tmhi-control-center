@@ -298,6 +298,35 @@ class UnifiedGatewayClient:
 
         return _empty_overview(detection)
 
+    async def gps_location(self) -> dict[str, Any] | None:
+        """Latitude and longitude exactly as the gateway reports them.
+
+        Read from the raw telemetry rather than the assembled overview. That
+        rendering formats every float to a single decimal place, which suits
+        signal metrics but collapses a coordinate onto a roughly ten-kilometre
+        grid -- useless as a map centre.
+
+        Returns None when the gateway exposes no GPS block, which is the case on
+        some models.
+        """
+        token = await self.authenticate()
+        _source, payload = await self._fetch_authenticated_json(
+            token,
+            self.CELL_PATHS,
+            label="Cell telemetry",
+        )
+        cell = _mapping_child(payload, ("cell",)) or payload
+        gps = _mapping_child(cell, ("gps", "location"))
+        latitude = _number_or_none(
+            _find_mapping_value(gps, ("latitude", "lat"), exact=True)
+        )
+        longitude = _number_or_none(
+            _find_mapping_value(gps, ("longitude", "lon", "lng"), exact=True)
+        )
+        if latitude is None or longitude is None:
+            return None
+        return {"latitude": float(latitude), "longitude": float(longitude)}
+
     async def connected_devices(
         self,
         *,

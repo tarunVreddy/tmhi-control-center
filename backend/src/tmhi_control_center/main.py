@@ -509,6 +509,24 @@ async def gateway_map(
     return payload
 
 
+@app.get("/api/gateway/location")
+async def gateway_location() -> dict[str, Any]:
+    try:
+        location = await gateway.gps_location()
+    except GatewayError as exc:
+        raise _gateway_exception(exc) from exc
+    except Exception as exc:
+        logger.exception("Gateway location lookup failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if location is None:
+        raise HTTPException(
+            status_code=404,
+            detail="This gateway does not report a GPS location",
+        )
+    return location
+
+
 @app.get("/api/gateway/wifi")
 async def gateway_wifi() -> dict[str, Any]:
     try:

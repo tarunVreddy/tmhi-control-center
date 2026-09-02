@@ -219,6 +219,7 @@ const ids = [
   "uptimeDetail",
   "uptimeMetric",
   "useBrowserLocationButton",
+  "useGatewayLocationButton",
   "watchdogMetric",
   "watchdogPhaseTag",
   "wifiDetails",
@@ -318,6 +319,7 @@ function bindControls() {
   els.saveWifiButton.addEventListener("click", saveWifiSettings);
   els.mapRefreshButton.addEventListener("click", () => refreshTowerMap({ includeNearby: true }));
   els.useBrowserLocationButton.addEventListener("click", useBrowserLocation);
+  els.useGatewayLocationButton.addEventListener("click", useGatewayLocation);
   els.saveMapCenterButton.addEventListener("click", saveMapCenter);
   els.saveOpenCellIdButton.addEventListener("click", saveOpenCellIdKey);
   els.clearOpenCellIdButton.addEventListener("click", clearOpenCellIdKey);
@@ -2610,6 +2612,32 @@ async function useBrowserLocation() {
   }
 }
 
+async function useGatewayLocation() {
+  state.mapBusy = true;
+  updateControlState();
+  setMapStatus("Reading the location the gateway reports.", "");
+
+  try {
+    const location = await api("/api/gateway/location");
+    const latitude = Number(location.latitude);
+    const longitude = Number(location.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      throw new Error("The gateway returned an unusable location.");
+    }
+    els.mapLatitude.value = latitude.toFixed(6);
+    els.mapLongitude.value = longitude.toFixed(6);
+    setMapStatus(
+      "Filled in the location the gateway reports. Select Save Map Center to keep it.",
+      "success",
+    );
+  } catch (error) {
+    setMapStatus(error.message || "The gateway did not report a location.", "error");
+  } finally {
+    state.mapBusy = false;
+    updateControlState();
+  }
+}
+
 async function saveMapCenter({ quiet = false } = {}) {
   const latitude = Number.parseFloat(els.mapLatitude.value);
   const longitude = Number.parseFloat(els.mapLongitude.value);
@@ -3364,6 +3392,7 @@ function updateControlState() {
   els.seriesInterval.disabled = busy;
   els.mapRefreshButton.disabled = busy;
   els.useBrowserLocationButton.disabled = busy;
+  els.useGatewayLocationButton.disabled = busy;
   els.saveMapCenterButton.disabled =
     busy ||
     !els.mapLatitude.value.trim() ||
