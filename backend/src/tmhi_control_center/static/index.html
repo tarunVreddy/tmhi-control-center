@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
     <link rel="manifest" href="/static/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260726-docker-lab-1" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260902-antenna-aiming-1" />
   </head>
   <body>
     <div class="app-shell">
@@ -47,22 +47,29 @@
               <small>Towers nearby</small>
             </span>
           </button>
-          <button class="nav-item" type="button" data-view="homelab">
+          <button class="nav-item" type="button" data-view="aim">
             <span class="nav-index">04</span>
+            <span>
+              <strong>Aim</strong>
+              <small>Live signal</small>
+            </span>
+          </button>
+          <button class="nav-item" type="button" data-view="homelab">
+            <span class="nav-index">05</span>
             <span>
               <strong>Homelab</strong>
               <small>Tune and backup</small>
             </span>
           </button>
           <button class="nav-item" type="button" data-view="diagnostics">
-            <span class="nav-index">05</span>
+            <span class="nav-index">06</span>
             <span>
               <strong>Diagnostics</strong>
               <small>Probes and data</small>
             </span>
           </button>
           <button class="nav-item" type="button" data-view="settings">
-            <span class="nav-index">06</span>
+            <span class="nav-index">07</span>
             <span>
               <strong>Settings</strong>
               <small>Login and app</small>
@@ -758,6 +765,66 @@
           </section>
 
           <section
+            id="view-aim"
+            class="app-view"
+            data-view-panel="aim"
+            aria-labelledby="aimHeading"
+          >
+            <div class="view-heading">
+              <div>
+                <p class="eyebrow">Placement</p>
+                <h2 id="aimHeading">Live Antenna Aiming</h2>
+              </div>
+              <div class="section-actions">
+                <span id="aimStateTag" class="tag tag--muted">Paused</span>
+                <button id="aimToggleButton" class="button button--primary button--compact" type="button">
+                  Start Aiming
+                </button>
+              </div>
+            </div>
+
+            <section class="workspace-section" aria-labelledby="aimLiveHeading">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Cellular Radio</p>
+                  <h2 id="aimLiveHeading">Signal Right Now</h2>
+                </div>
+                <span id="aimUpdatedTag" class="tag tag--muted">No samples yet</span>
+              </div>
+
+              <div class="signal-layout">
+                <div id="aimMeter" class="signal-ring" style="--score: 0">
+                  <div>
+                    <strong id="aimMeterValue">--</strong>
+                    <span id="aimMeterLabel">Unknown</span>
+                  </div>
+                </div>
+                <div>
+                  <p id="aimSummary" class="signal-summary">
+                    Select Start Aiming to read the gateway every 2 seconds, then move or
+                    rotate it and watch the values respond.
+                  </p>
+                  <div id="aimMetrics" class="mini-metric-grid"></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="workspace-section" aria-labelledby="aimTrendHeading">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">This Session</p>
+                  <h2 id="aimTrendHeading">Best and Worst Seen</h2>
+                </div>
+                <button id="aimResetButton" class="button button--secondary button--compact" type="button">
+                  Reset Session
+                </button>
+              </div>
+              <div id="aimTrend" class="mini-metric-grid"></div>
+              <div id="aimStatusMessage" class="message" role="status" aria-live="polite"></div>
+            </section>
+          </section>
+
+          <section
             id="view-settings"
             class="app-view"
             data-view-panel="settings"
@@ -1169,6 +1236,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-    <script src="/static/app.js?v=20260726-docker-lab-1" defer></script>
+    <script src="/static/app.js?v=20260902-antenna-aiming-1" defer></script>
   </body>
 </html>

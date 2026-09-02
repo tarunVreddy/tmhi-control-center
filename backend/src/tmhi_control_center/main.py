@@ -365,6 +365,17 @@ async def gateway_overview() -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/gateway/signal")
+async def gateway_signal() -> dict[str, Any]:
+    try:
+        return await gateway.signal_snapshot()
+    except GatewayError as exc:
+        raise _gateway_exception(exc) from exc
+    except Exception as exc:
+        logger.exception("Gateway signal snapshot failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.get("/api/gateway/telemetry/history")
 async def gateway_telemetry_history(
     hours: int = Query(default=6, ge=1, le=336),

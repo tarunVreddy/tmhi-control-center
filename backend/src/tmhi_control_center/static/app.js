@@ -1,6 +1,8 @@
 const THEME_STORAGE_KEY = "tmhi-control-center-theme";
 const VIEW_STORAGE_KEY = "tmhi-control-center-view";
 const DEFAULT_VIEW = "dashboard";
+const AIM_POLL_INTERVAL_MS = 2000;
+const AIM_MAX_CONSECUTIVE_ERRORS = 5;
 const DEFAULT_MAP_CENTER = { latitude: 39.8283, longitude: -98.5795 };
 const DEFAULT_MAP_RADIUS_KM = 0.8;
 const MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -25,6 +27,11 @@ const SPEED_TEST_RUNS_PER_DAY = {
 };
 
 const state = {
+  aimTimer: null,
+  aimPaused: false,
+  aimSnapshot: null,
+  aimTrend: {},
+  aimErrors: 0,
   config: null,
   status: null,
   overview: null,
@@ -63,6 +70,18 @@ const state = {
 
 const ids = [
   "actionMessage",
+  "aimHeading",
+  "aimMeter",
+  "aimMeterLabel",
+  "aimMeterValue",
+  "aimMetrics",
+  "aimResetButton",
+  "aimStateTag",
+  "aimStatusMessage",
+  "aimSummary",
+  "aimToggleButton",
+  "aimTrend",
+  "aimUpdatedTag",
   "advancedCellTag",
   "advancedLabEnabled",
   "advancedModemAcknowledge",
@@ -303,6 +322,13 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshAll();
   window.setInterval(refreshLiveData, LIVE_POLL_INTERVAL_MS);
   document.addEventListener("visibilitychange", () => {
+    // Drop the aiming timer while hidden rather than waking every 2s to return
+    // early, and pick it back up on return unless the pause was deliberate.
+    if (document.hidden) {
+      stopAiming();
+    } else if (state.activeView === "aim" && !state.aimPaused) {
+      startAiming();
+    }
     if (!document.hidden && Date.now() - state.lastLiveRefreshAt >= LIVE_POLL_INTERVAL_MS) {
       refreshLiveData();
     }
@@ -399,6 +425,9 @@ function bindControls() {
       }
     });
   });
+
+  els.aimToggleButton.addEventListener("click", toggleAiming);
+  els.aimResetButton.addEventListener("click", resetAimSession);
 }
 
 function initializeTheme() {
@@ -439,6 +468,13 @@ function selectView(name) {
 
 function activateView(name, { refreshMap = true } = {}) {
   selectView(name);
+  // Only poll while the view is on screen; nothing else needs a 2s cadence.
+  // An explicit Stop is respected until the button is used again.
+  if (state.activeView === "aim" && !state.aimPaused) {
+    startAiming();
+  } else {
+    stopAiming();
+  }
   if (state.activeView === "map") {
     scheduleMainMapRender();
     if (refreshMap) {
@@ -2704,6 +2740,205 @@ function setMapStatus(message, tone) {
   els.mapStatusMessage.className = "message";
   if (tone) {
     els.mapStatusMessage.classList.add(`message--${tone}`);
+  }
+}
+
+function toggleAiming() {
+  if (state.aimTimer) {
+    // Record that the pause was deliberate. Leaving and re-entering the view
+    // calls stopAiming()/startAiming() on its own, and without this flag that
+    // would silently undo an explicit Stop.
+    state.aimPaused = true;
+    stopAiming();
+    setAimStatus("Paused. Select Start Aiming to resume.", "");
+  } else {
+    state.aimPaused = false;
+    startAiming();
+  }
+}
+
+function startAiming() {
+  if (state.aimTimer) {
+    return;
+  }
+  state.aimErrors = 0;
+  state.aimTimer = window.setInterval(pollAimSignal, AIM_POLL_INTERVAL_MS);
+  setText(els.aimToggleButton, "Stop Aiming");
+  setTag(els.aimStateTag, "Live", "good");
+  setAimStatus("", "");
+  pollAimSignal();
+}
+
+function stopAiming() {
+  if (state.aimTimer) {
+    window.clearInterval(state.aimTimer);
+    state.aimTimer = null;
+  }
+  setText(els.aimToggleButton, "Start Aiming");
+  setTag(els.aimStateTag, "Paused", "muted");
+}
+
+async function pollAimSignal() {
+  // The timer is stopped on hide and on leaving the view, so this is only a
+  // guard against a poll already in flight when either happens.
+  if (document.hidden || state.activeView !== "aim") {
+    return;
+  }
+
+  try {
+    const snapshot = await api("/api/gateway/signal");
+    state.aimSnapshot = snapshot;
+    state.aimErrors = 0;
+    recordAimSample(snapshot);
+    renderAim();
+    setAimStatus("", "");
+  } catch (error) {
+    state.aimErrors += 1;
+    setAimStatus(error.message || "The gateway did not return a signal reading.", "error");
+    if (state.aimErrors >= AIM_MAX_CONSECUTIVE_ERRORS) {
+      // Stop rather than keep hammering a gateway that is not answering.
+      stopAiming();
+      setAimStatus(
+        `Stopped after ${AIM_MAX_CONSECUTIVE_ERRORS} failed reads. Select Start Aiming to retry.`,
+        "error",
+      );
+    }
+  }
+}
+
+function aimMetricRows(snapshot) {
+  const rows = [];
+  for (const radio of snapshot?.radios || []) {
+    for (const metric of radio.metrics || []) {
+      rows.push({ radio, metric });
+    }
+  }
+  return rows;
+}
+
+function recordAimSample(snapshot) {
+  for (const { radio, metric } of aimMetricRows(snapshot)) {
+    if (!Number.isFinite(metric.value)) {
+      continue;
+    }
+    const key = `${radio.key}:${metric.key}`;
+    const entry = state.aimTrend[key] || {
+      label: `${radio.label} ${metric.label || humanize(metric.key)}`,
+      unit: metric.unit || "",
+      best: metric.value,
+      worst: metric.value,
+      samples: 0,
+    };
+    // Every metric here reads better as it rises, so best is simply the maximum.
+    entry.current = metric.value;
+    entry.best = Math.max(entry.best, metric.value);
+    entry.worst = Math.min(entry.worst, metric.value);
+    entry.samples += 1;
+    state.aimTrend[key] = entry;
+  }
+}
+
+function resetAimSession() {
+  state.aimTrend = {};
+  renderAimTrend();
+  setAimStatus("Session reset. Best and worst start again from the next reading.", "success");
+}
+
+function formatAimNumber(value, unit) {
+  if (!Number.isFinite(value)) {
+    return "--";
+  }
+  const rounded = Math.round(value * 10) / 10;
+  return unit ? `${rounded} ${unit}` : String(rounded);
+}
+
+function renderAim() {
+  const snapshot = state.aimSnapshot;
+  if (!snapshot) {
+    return;
+  }
+
+  const signal = snapshot.signal || {};
+  const score = Number.isFinite(signal.score) ? signal.score : 0;
+  const quality = signal.quality || "Unknown";
+
+  els.aimMeter.style.setProperty("--score", String(Math.max(0, Math.min(100, score))));
+  els.aimMeter.dataset.rating = toneFromQuality(quality);
+  setText(els.aimMeterValue, Number.isFinite(signal.score) ? `${signal.score}%` : "--");
+  setText(els.aimMeterLabel, quality);
+  setText(
+    els.aimSummary,
+    "Move or rotate the gateway and watch these values respond. Readings update every 2 seconds.",
+  );
+
+  const observed = new Date(snapshot.observed_at);
+  setTag(
+    els.aimUpdatedTag,
+    Number.isNaN(observed.getTime()) ? "Updated" : `Updated ${observed.toLocaleTimeString()}`,
+    "muted",
+  );
+
+  replaceChildren(els.aimMetrics);
+  const rows = aimMetricRows(snapshot);
+  if (!rows.length) {
+    els.aimMetrics.append(emptyNode("The gateway returned no signal metrics."));
+  } else {
+    for (const { radio, metric } of rows) {
+      const item = document.createElement("article");
+      item.className = `mini-metric mini-metric--${toneFromQuality(metric.rating)}`;
+
+      const label = document.createElement("span");
+      label.textContent = `${radio.label} ${metric.label || humanize(metric.key)}`;
+
+      const value = document.createElement("strong");
+      value.textContent = metric.display || formatValue(metric.value);
+
+      const note = document.createElement("small");
+      note.textContent = metric.rating ? humanize(metric.rating) : "";
+
+      item.append(label, value, note);
+      els.aimMetrics.append(item);
+    }
+  }
+
+  renderAimTrend();
+}
+
+function renderAimTrend() {
+  replaceChildren(els.aimTrend);
+  const keys = Object.keys(state.aimTrend);
+  if (!keys.length) {
+    els.aimTrend.append(emptyNode("Best and worst readings appear once sampling starts."));
+    return;
+  }
+
+  for (const key of keys) {
+    const entry = state.aimTrend[key];
+    const item = document.createElement("article");
+    item.className = "mini-metric";
+
+    const label = document.createElement("span");
+    label.textContent = `${entry.label} best`;
+
+    const value = document.createElement("strong");
+    value.textContent = formatAimNumber(entry.best, entry.unit);
+
+    const note = document.createElement("small");
+    note.textContent =
+      `now ${formatAimNumber(entry.current, entry.unit)} \u00b7 ` +
+      `worst ${formatAimNumber(entry.worst, entry.unit)} \u00b7 ` +
+      `${entry.samples} sample${entry.samples === 1 ? "" : "s"}`;
+
+    item.append(label, value, note);
+    els.aimTrend.append(item);
+  }
+}
+
+function setAimStatus(message, tone) {
+  setText(els.aimStatusMessage, message || "");
+  els.aimStatusMessage.className = "message";
+  if (tone) {
+    els.aimStatusMessage.classList.add(`message--${tone}`);
   }
 }
 

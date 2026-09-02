@@ -197,6 +197,7 @@ class UnifiedGatewayClient:
 
     AUTH_PATH = "/auth/login"
     INFO_PATHS = ("/gateway/?get=all", "/gateway?get=all")
+    SIGNAL_PATHS = ("/gateway/?get=signal", "/gateway?get=signal")
     REBOOT_PATH = "/gateway/reset?set=reboot"
     CLIENT_PATHS = (
         "/network/telemetry/?get=clients",
@@ -343,6 +344,49 @@ class UnifiedGatewayClient:
 
         raise GatewayUnavailableError(
             _summarize_errors(errors, "Connected-device telemetry was not reachable")
+        )
+
+    async def signal_snapshot(self) -> dict[str, Any]:
+        """Compact signal read for the live aiming view.
+
+        Deliberately avoids overview(): that authenticates on every call, and
+        aiming polls every couple of seconds, which would put a login on the
+        gateway many times a minute. The signal endpoint needs no token, so
+        aiming adds no authentication traffic at all.
+        """
+        errors: list[str] = []
+        for base_url in self._ordered_tmi_base_urls():
+            for path in self.SIGNAL_PATHS:
+                try:
+                    response = await self._client.get(_endpoint_url(base_url, path))
+                except (httpx.HTTPError, OSError) as exc:
+                    errors.append(f"{base_url}{path}: {type(exc).__name__}: {exc}")
+                    continue
+
+                if not response.is_success:
+                    errors.append(
+                        f"{base_url}{path}: signal API returned HTTP "
+                        f"{response.status_code}"
+                    )
+                    continue
+
+                try:
+                    payload = response.json()
+                except ValueError:
+                    errors.append(f"{base_url}{path}: signal API returned invalid JSON")
+                    continue
+
+                if not isinstance(payload, dict):
+                    errors.append(
+                        f"{base_url}{path}: signal API returned non-object JSON"
+                    )
+                    continue
+
+                self._active_tmi_base_url = base_url
+                return _build_signal_snapshot(payload)
+
+        raise GatewayUnavailableError(
+            _summarize_errors(errors, "Signal API was not reachable")
         )
 
     async def wifi_config(self) -> dict[str, Any]:
@@ -817,6 +861,32 @@ def _build_unified_overview(
         },
         "signal": signal,
         "sections": _sections_from_payload(sections_payload),
+    }
+
+
+def _build_signal_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Shape a signal-only payload the same way the dashboard shapes an overview.
+
+    Scoring and metric selection are shared with _build_unified_overview so the
+    aiming view and the dashboard cannot disagree about the same reading.
+    """
+    safe = _redact_sensitive(payload)
+    radios = _radio_summaries(safe, None)
+    signal = _signal_summary(list(_flatten_leaves(safe)))
+
+    scores = [
+        radio["score"]
+        for radio in radios
+        if radio.get("active") is not False and radio.get("score") is not None
+    ]
+    if scores:
+        signal["score"] = round(sum(scores) / len(scores))
+        signal["quality"] = _quality_from_score(signal["score"])
+
+    return {
+        "observed_at": utc_now().isoformat(),
+        "signal": signal,
+        "radios": radios,
     }
 
 
