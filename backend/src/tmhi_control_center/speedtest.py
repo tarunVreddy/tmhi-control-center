@@ -39,6 +39,8 @@ INTERVAL_CADENCE_MINUTES = {
     "every_15_minutes": 15,
     "every_30_minutes": 30,
     "hourly": 60,
+    "every_6_hours": 360,
+    "every_12_hours": 720,
 }
 SPEEDTEST_CADENCES = {
     "disabled",

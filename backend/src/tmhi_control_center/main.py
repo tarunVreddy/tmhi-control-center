@@ -227,6 +227,8 @@ class SpeedTestSettingsUpdateRequest(BaseModel):
         "every_15_minutes",
         "every_30_minutes",
         "hourly",
+        "every_6_hours",
+        "every_12_hours",
         "daily",
         "weekly",
         "monthly",

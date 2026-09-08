@@ -379,6 +379,8 @@ class Settings:
             "every_15_minutes",
             "every_30_minutes",
             "hourly",
+            "every_6_hours",
+            "every_12_hours",
             "daily",
             "weekly",
             "monthly",
@@ -386,7 +388,7 @@ class Settings:
             raise ValueError(
                 "SPEEDTEST_CADENCE must be disabled, every_5_minutes, "
                 "every_10_minutes, every_15_minutes, every_30_minutes, hourly, "
-                "daily, weekly, or monthly"
+                "every_6_hours, every_12_hours, daily, weekly, or monthly"
             )
         if self.speedtest_profile not in {
             "gentle",
