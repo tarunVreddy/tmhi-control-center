@@ -12,6 +12,22 @@ const SPEED_TEST_PROFILE_BYTES = {
   extended: 300_000_000,
   maximum: 1_000_000_000,
 };
+
+// The history window has to be at least as wide as the gap between runs or the
+// chart reads empty while the schedule is working normally. Daily cadence
+// rotates across dayparts, so consecutive runs can sit 30 hours apart and a 24h
+// window misses them for part of every cycle.
+const SPEED_TEST_DEFAULT_RANGE = {
+  disabled: "7",
+  every_5_minutes: "1",
+  every_10_minutes: "1",
+  every_15_minutes: "1",
+  every_30_minutes: "1",
+  hourly: "1",
+  daily: "7",
+  weekly: "30",
+  monthly: "all",
+};
 const SPEED_TEST_RUNS_PER_DAY = {
   disabled: 0,
   every_5_minutes: 288,
@@ -41,6 +57,7 @@ const state = {
   speedTestHistory: null,
   speedTestDays: 1,
   speedTestRange: "1",
+  speedTestRangePinned: false,
   speedTestBusy: false,
   activeView: DEFAULT_VIEW,
   theme: "light",
@@ -393,8 +410,9 @@ function bindControls() {
   document.querySelectorAll("[data-speedtest-days]").forEach((button) => {
     button.addEventListener("click", () => {
       const range = button.dataset.speedtestDays;
-      const days = range === "all" ? speedTestRetentionDays() : Number(range);
+      const days = speedTestRangeToDays(range);
       if (Number.isFinite(days)) {
+        state.speedTestRangePinned = true;
         refreshSpeedTestHistory(days, range);
       }
     });
@@ -535,6 +553,8 @@ async function refreshAll({ quiet = false } = {}) {
   } else {
     errors.push(`Root research: ${results[11].reason.message}`);
   }
+
+  await applySpeedTestDefaultRange();
 
   renderAll();
   setText(els.lastRefresh, `Updated ${formatTime(new Date())}`);
@@ -1369,6 +1389,41 @@ function speedTestRetentionDays() {
       state.config?.speed_test?.retention_days ||
       730
   );
+}
+
+function speedTestDefaultRange(cadence) {
+  return SPEED_TEST_DEFAULT_RANGE[cadence] || "1";
+}
+
+function speedTestRangeToDays(range) {
+  return range === "all" ? speedTestRetentionDays() : Number(range);
+}
+
+// Widen the history window to match the configured cadence, unless the reader
+// has already chosen a range themselves this session.
+async function applySpeedTestDefaultRange() {
+  if (state.speedTestRangePinned) {
+    return;
+  }
+  const cadence =
+    state.speedTestStatus?.cadence || state.config?.speed_test?.cadence;
+  if (!cadence) {
+    return;
+  }
+  let range = speedTestDefaultRange(cadence);
+  let days = speedTestRangeToDays(range);
+  if (!Number.isFinite(days)) {
+    return;
+  }
+  const retentionDays = speedTestRetentionDays();
+  if (days > retentionDays) {
+    range = "all";
+    days = retentionDays;
+  }
+  if (range === state.speedTestRange) {
+    return;
+  }
+  await refreshSpeedTestHistory(days, range);
 }
 
 function formatRetention(days) {
@@ -3107,6 +3162,7 @@ async function saveSpeedTestSchedule() {
         `/api/speedtest/history?days=${state.speedTestDays}`
       );
     }
+    await applySpeedTestDefaultRange();
     state.config = await api("/api/config");
     renderAll();
     return cadence === "disabled"
