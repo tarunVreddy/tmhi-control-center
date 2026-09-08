@@ -19,6 +19,8 @@ const SPEED_TEST_RUNS_PER_DAY = {
   every_15_minutes: 96,
   every_30_minutes: 48,
   hourly: 24,
+  every_6_hours: 4,
+  every_12_hours: 2,
   daily: 1,
   weekly: 1 / 7,
   monthly: 1 / 30,
@@ -1393,6 +1395,8 @@ function renderSpeedTestSchedulePreview() {
     every_15_minutes: "15 minutes",
     every_30_minutes: "30 minutes",
     hourly: "hour",
+    every_6_hours: "6 hours",
+    every_12_hours: "12 hours",
   };
 
   if (cadence === "disabled") {
@@ -1458,6 +1462,8 @@ function renderSpeedTests() {
     every_15_minutes: "Every 15 minutes",
     every_30_minutes: "Every 30 minutes",
     hourly: "Hourly schedule",
+    every_6_hours: "Every 6 hours",
+    every_12_hours: "Every 12 hours",
     daily: "Daily schedule",
     weekly: "Weekly schedule",
     monthly: "Monthly schedule",
