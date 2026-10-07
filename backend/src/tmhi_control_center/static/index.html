@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#111722" />
+    <!-- The server replaces "dev" with the build ID and each ?v= below with a
+         hash of the file it names; neither needs bumping by hand. -->
+    <meta name="tmhi-build" content="dev" />
     <title>TMHI Control Center</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png" />
@@ -12,7 +15,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
     <link rel="manifest" href="/static/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261007-deploy-9" />
+    <link rel="stylesheet" href="/static/styles.css?v=dev" />
   </head>
   <body>
     <div class="app-shell">
@@ -1349,6 +1352,10 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-    <script src="/static/app.js?v=20261007-deploy-9" defer></script>
+    <button id="updateButton" class="update-pill" type="button" hidden>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 12a9 9 0 1 1-3-6.7 M21 4v5h-5" /></svg>
+      Update ready &middot; Reload
+    </button>
+    <script src="/static/app.js?v=dev" defer></script>
   </body>
 </html>
