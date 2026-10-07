@@ -7,6 +7,8 @@ const DEFAULT_MAP_CENTER = { latitude: 39.8283, longitude: -98.5795 };
 const DEFAULT_MAP_RADIUS_KM = 0.8;
 const MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const LIVE_POLL_INTERVAL_MS = 60000;
+// The build this page was served as; the server stamps it into the markup.
+const PAGE_BUILD = document.querySelector('meta[name="tmhi-build"]')?.content || "";
 const SPEED_TEST_PROFILE_BYTES = {
   gentle: 12_000_000,
   standard: 30_000_000,
@@ -69,6 +71,9 @@ const state = {
   timelineVisible: [],
   timelineRange: null,
   timelineDragging: false,
+  updateReady: false,
+  updateBuild: null,
+  updateChecking: false,
   gatewayDetails: null,
   speedTestStatus: null,
   speedTestHistory: null,
@@ -276,6 +281,7 @@ const ids = [
   "temperatureMetricCard",
   "temperatureTrendChart",
   "temperatureTrendPanel",
+  "updateButton",
   "timelineDetail",
   "timelineFilters",
   "testFrequency",
@@ -379,7 +385,17 @@ document.addEventListener("DOMContentLoaded", () => {
   selectTab("probes");
   refreshAll();
   window.setInterval(refreshLiveData, LIVE_POLL_INTERVAL_MS);
+  // iOS resumes a home-screen app where it left off instead of reloading it,
+  // so coming back to the foreground is when a deploy gets noticed.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) {
+      checkForUpdate({ reloadWhenSafe: true });
+    }
+  });
   document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      checkForUpdate({ reloadWhenSafe: true });
+    }
     // Drop the aiming timer while hidden rather than waking every 2s to return
     // early, and pick it back up on return unless the pause was deliberate.
     if (document.hidden) {
@@ -458,6 +474,18 @@ function bindControls() {
   // bar leaves the reader partway down a page they have not seen.
   const openView = (view) => {
     const changed = view !== state.activeView;
+    if (
+      changed &&
+      state.updateReady &&
+      canReloadForUpdate() &&
+      !alreadyReloadedFor(state.updateBuild)
+    ) {
+      // A deliberate move is a natural moment to pick up a waiting update;
+      // the chosen view is remembered across the reload.
+      selectView(view);
+      reloadForUpdate();
+      return;
+    }
     activateView(view);
     if (changed) {
       window.scrollTo({ top: 0 });
@@ -506,6 +534,7 @@ function bindControls() {
   els.aimToggleButton.addEventListener("click", toggleAiming);
   els.aimResetButton.addEventListener("click", resetAimSession);
   bindTimeline();
+  els.updateButton.addEventListener("click", reloadForUpdate);
 }
 
 function initializeTheme() {
@@ -720,6 +749,78 @@ async function refreshLiveData() {
   setText(els.lastRefresh, `Live ${formatTime(new Date())}`);
   state.lastLiveRefreshAt = Date.now();
   state.liveRefreshing = false;
+  // On screen, only offer the update; reloading under someone is worse.
+  checkForUpdate();
+}
+
+async function checkForUpdate({ reloadWhenSafe = false } = {}) {
+  if (!PAGE_BUILD || PAGE_BUILD === "dev" || state.updateChecking) {
+    return;
+  }
+  if (!state.updateReady) {
+    state.updateChecking = true;
+    try {
+      const info = await api("/api/version");
+      state.updateReady = Boolean(info?.build) && info.build !== PAGE_BUILD;
+      state.updateBuild = info?.build || null;
+    } catch {
+      // Offline, or the server is mid-restart; the next check will tell.
+    } finally {
+      state.updateChecking = false;
+    }
+  }
+  if (!state.updateReady) {
+    return;
+  }
+  if (reloadWhenSafe && canReloadForUpdate() && !alreadyReloadedFor(state.updateBuild)) {
+    reloadForUpdate();
+    return;
+  }
+  els.updateButton.hidden = false;
+}
+
+// If a reload for this build still came back with the old page, something
+// between here and the server is caching it; offer the button rather than
+// reloading on every return to the app.
+const UPDATE_RELOAD_KEY = "tmhi-control-center-reloaded-for";
+
+function alreadyReloadedFor(build) {
+  try {
+    return Boolean(build) && window.sessionStorage.getItem(UPDATE_RELOAD_KEY) === build;
+  } catch {
+    return false;
+  }
+}
+
+function reloadForUpdate() {
+  try {
+    if (state.updateBuild) {
+      window.sessionStorage.setItem(UPDATE_RELOAD_KEY, state.updateBuild);
+    }
+  } catch {
+    // Storage unavailable: the reload still goes ahead.
+  }
+  window.location.reload();
+}
+
+// A reload would lose whatever is in progress: typing, a running test or
+// sweep, a drag, or a live aiming session.
+function canReloadForUpdate() {
+  const active = document.activeElement;
+  const typing =
+    active?.matches?.("input, textarea, select") &&
+    !["checkbox", "radio", "button"].includes(active.type);
+  return !(
+    typing ||
+    state.actionBusy ||
+    state.speedTestBusy ||
+    state.seriesRunning ||
+    state.timelineDragging ||
+    state.mapBusy ||
+    state.gatewayLoginBusy ||
+    state.snapshotBusy ||
+    (state.activeView === "aim" && state.aimTimer)
+  );
 }
 
 async function refreshTelemetryHistory(hours) {

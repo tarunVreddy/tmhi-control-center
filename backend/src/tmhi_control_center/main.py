@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -130,6 +132,36 @@ telemetry_collector = GatewayTelemetryCollector(
 )
 telemetry_task: asyncio.Task[None] | None = None
 STATIC_DIR = Path(__file__).parent / "static"
+FINGERPRINTED_ASSETS = ("app.js", "styles.css")
+
+
+def _render_dashboard() -> tuple[str, str]:
+    """The dashboard page with its script and stylesheet tagged by content.
+
+    Each ?v= becomes a hash of the file it points at, so a deploy that changes
+    a file changes its URL and no browser can pair new markup with an old
+    script. The build ID covers all three files and is stamped into the page,
+    which compares it with /api/version to notice a newer deploy while open.
+    """
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    digest = hashlib.sha256(html.encode("utf-8"))
+    for name in FINGERPRINTED_ASSETS:
+        fingerprint = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        digest.update(fingerprint.encode("ascii"))
+        html = re.sub(
+            rf"(/static/{re.escape(name)})\?v=[^\"']*",
+            rf"\g<1>?v={fingerprint}",
+            html,
+        )
+    build = digest.hexdigest()[:12]
+    html = html.replace(
+        '<meta name="tmhi-build" content="dev" />',
+        f'<meta name="tmhi-build" content="{build}" />',
+    )
+    return html, build
+
+
+DASHBOARD_HTML, BUILD_ID = _render_dashboard()
 
 
 @asynccontextmanager
@@ -335,8 +367,21 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", include_in_schema=False)
-async def dashboard() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+async def dashboard(request: Request) -> Response:
+    # no-cache makes the browser ask every time instead of guessing a reuse
+    # period from Last-Modified; the ETag keeps an unchanged answer to a 304.
+    headers = {"Cache-Control": "no-cache", "ETag": f'"{BUILD_ID}"'}
+    if request.headers.get("if-none-match") == headers["ETag"]:
+        return Response(status_code=304, headers=headers)
+    return HTMLResponse(DASHBOARD_HTML, headers=headers)
+
+
+@app.get("/api/version")
+async def version() -> JSONResponse:
+    return JSONResponse(
+        {"version": __version__, "build": BUILD_ID},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/healthz")

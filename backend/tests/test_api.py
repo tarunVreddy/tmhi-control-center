@@ -36,6 +36,31 @@ def test_dashboard_is_served(monkeypatch, tmp_path) -> None:
     assert "setInterval(() => refreshAll" not in script.text
 
 
+def test_dashboard_carries_its_build_and_is_revalidated(monkeypatch, tmp_path) -> None:
+    import hashlib
+    import re
+
+    main = load_main(monkeypatch, tmp_path)
+
+    with TestClient(main.app) as client:
+        page = client.get("/")
+        version = client.get("/api/version")
+        again = client.get("/", headers={"If-None-Match": page.headers["etag"]})
+
+    build = version.json()["build"]
+    assert re.fullmatch(r"[0-9a-f]{12}", build)
+    assert f'<meta name="tmhi-build" content="{build}" />' in page.text
+    assert page.headers["cache-control"] == "no-cache"
+    assert version.headers["cache-control"] == "no-store"
+    assert again.status_code == 304
+
+    # Each asset URL carries a hash of that file, never a hand-set tag.
+    for name in ("app.js", "styles.css"):
+        expected = hashlib.sha256((main.STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        assert f"/static/{name}?v={expected}" in page.text
+    assert "?v=dev" not in page.text
+
+
 def test_check_series_endpoint(monkeypatch, tmp_path) -> None:
     main = load_main(monkeypatch, tmp_path)
 
