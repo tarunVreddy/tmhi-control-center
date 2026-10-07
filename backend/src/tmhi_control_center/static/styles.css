@@ -3147,3 +3147,50 @@ th {
     min-height: 42px;
   }
 }
+
+/* Sign-in page, served at / until the browser has a session. */
+.signin-page {
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+.signin {
+  width: min(100%, 380px);
+}
+
+.signin-card {
+  display: grid;
+  gap: 6px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.signin-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.signin-brand h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 22px;
+}
+
+.signin-message {
+  margin: 0 0 8px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  color: var(--red);
+  background: var(--red-soft);
+  font-weight: 700;
+}
+
+.signin-card .button {
+  width: 100%;
+}

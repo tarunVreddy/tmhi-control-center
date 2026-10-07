@@ -101,6 +101,7 @@ const state = {
 };
 
 const ids = [
+  "signOutButton",
   "actionMessage",
   "aimHeading",
   "aimMeter",
@@ -415,6 +416,7 @@ function bindControls() {
   els.gatewayButton.addEventListener("click", runGatewayTest);
   els.saveGatewayButton.addEventListener("click", saveGatewayLogin);
   els.forgetGatewayButton.addEventListener("click", clearGatewayLogin);
+  els.signOutButton.addEventListener("click", signOut);
   els.saveWifiButton.addEventListener("click", saveWifiSettings);
   els.mapRefreshButton.addEventListener("click", () => refreshTowerMap({ includeNearby: true }));
   els.useBrowserLocationButton.addEventListener("click", useBrowserLocation);
@@ -909,6 +911,11 @@ async function api(path, options = {}) {
   }
 
   const response = await fetch(path, init);
+  if (response.status === 401) {
+    // The session lapsed or the password changed; / serves the sign-in form.
+    window.location.reload();
+    throw new Error("Sign in required");
+  }
   const text = await response.text();
   let payload = null;
   if (text) {
@@ -4245,7 +4252,7 @@ async function saveGatewayLogin() {
 }
 
 async function clearGatewayLogin() {
-  if (!window.confirm("Forget the saved gateway login?")) {
+  if (!window.confirm("Forget the saved gateway login? This also signs every browser out of the dashboard.")) {
     return;
   }
 
@@ -4259,12 +4266,23 @@ async function clearGatewayLogin() {
       gateway_login_saved: false,
     };
     els.gatewayPassword.value = "";
+    if (!result.gateway_password_configured) {
+      window.location.reload();
+    }
     return result.gateway_password_source === "environment"
       ? "Saved login cleared. Environment password remains active."
       : "Gateway login cleared.";
   });
   state.gatewayLoginBusy = false;
   renderControls();
+}
+
+async function signOut() {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } finally {
+    window.location.reload();
+  }
 }
 
 async function saveWifiSettings() {
