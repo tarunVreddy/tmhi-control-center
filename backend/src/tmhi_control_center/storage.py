@@ -384,6 +384,18 @@ class EventStore:
         async with self._lock:
             return await asyncio.to_thread(_all)
 
+    async def oldest_telemetry_timestamp(self) -> datetime | None:
+        def _oldest() -> datetime | None:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT MIN(timestamp) AS timestamp FROM telemetry_snapshots"
+                ).fetchone()
+            value = row["timestamp"]
+            return datetime.fromtimestamp(value, timezone.utc) if value else None
+
+        async with self._lock:
+            return await asyncio.to_thread(_oldest)
+
     async def latest_telemetry_snapshot(
         self,
     ) -> tuple[datetime, dict[str, Any]] | None:

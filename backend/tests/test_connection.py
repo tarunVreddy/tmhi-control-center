@@ -159,6 +159,7 @@ async def test_backfill_runs_once_and_attributes_app_reboots(tmp_path) -> None:
     )
 
     assert await backfill_history(store) == {"events": 1, "speed_tests": 1}
+    assert await store.get_meta("connection_history_start") == T0.isoformat()
     assert await backfill_history(store) == {"events": 0, "speed_tests": 0}
 
     [restart] = await store.events_since(CONNECTION_EVENT_KINDS, T0 - timedelta(days=1))
@@ -251,6 +252,7 @@ def test_outage_summary_pairs_events_and_buckets_by_local_hour() -> None:
     assert summary["recent"][0]["ongoing"] is True
     assert summary["recent"][0]["duration_seconds"] == 600
     assert summary["recent"][1]["diagnosis"] == "upstream"
+    assert [period["ongoing"] for period in summary["periods"]] == [False, True]
     assert {item["key"]: item["count"] for item in summary["diagnoses"]} == {
         "upstream": 1,
         "unknown": 1,
