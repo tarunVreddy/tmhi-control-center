@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
     <link rel="manifest" href="/static/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261006-deploy-7" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261007-deploy-8" />
   </head>
   <body>
     <div class="app-shell">
@@ -351,6 +351,24 @@
                 </article>
               </div>
 
+              <article class="chart-panel timeline-panel">
+                <div class="chart-heading timeline-heading">
+                  <div>
+                    <span>Drag, click, or use arrow keys</span>
+                    <strong>Timeline</strong>
+                  </div>
+                  <div id="timelineFilters" class="timeline-filters" aria-label="Show or hide event types"></div>
+                </div>
+                <div
+                  id="connectionTimeline"
+                  class="timeline"
+                  tabindex="0"
+                  role="slider"
+                  aria-label="Connection timeline"
+                ></div>
+                <div id="timelineDetail" class="timeline-detail" aria-live="polite"></div>
+              </article>
+
               <div class="stability-grid">
                 <article class="chart-panel">
                   <div class="chart-heading">
@@ -361,17 +379,16 @@
                     <small id="outageHourZone">Gateway time</small>
                   </div>
                   <div id="outageHourChart" class="hour-chart"></div>
-                  <div id="outageBreakdown" class="daypart-grid outage-breakdown"></div>
-                  <p id="outageDiagnosis" class="privacy-note"></p>
                 </article>
                 <article class="chart-panel">
                   <div class="chart-heading">
                     <div>
-                      <span>Handovers, Restarts, Firmware</span>
-                      <strong>Recent Changes</strong>
+                      <span>How Long They Last</span>
+                      <strong>Outage Lengths</strong>
                     </div>
                   </div>
-                  <div id="connectionChangeList" class="event-list change-list"></div>
+                  <div id="outageBreakdown" class="bar-list"></div>
+                  <p id="outageDiagnosis" class="privacy-note"></p>
                 </article>
               </div>
             </section>
@@ -1318,6 +1335,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-    <script src="/static/app.js?v=20261006-deploy-7" defer></script>
+    <script src="/static/app.js?v=20261007-deploy-8" defer></script>
   </body>
 </html>

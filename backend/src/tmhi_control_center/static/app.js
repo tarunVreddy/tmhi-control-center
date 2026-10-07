@@ -64,6 +64,11 @@ const state = {
   telemetryHours: 6,
   connectionHistory: null,
   connectionDays: 14,
+  timelineSelectedKey: null,
+  timelineHidden: new Set(),
+  timelineVisible: [],
+  timelineRange: null,
+  timelineDragging: false,
   gatewayDetails: null,
   speedTestStatus: null,
   speedTestHistory: null,
@@ -117,7 +122,7 @@ const ids = [
   "connectedDetail",
   "connectionChangeCount",
   "connectionChangeDetail",
-  "connectionChangeList",
+  "connectionTimeline",
   "connectedMetric",
   "connectionDetails",
   "cqiTrendChart",
@@ -271,6 +276,8 @@ const ids = [
   "temperatureMetricCard",
   "temperatureTrendChart",
   "temperatureTrendPanel",
+  "timelineDetail",
+  "timelineFilters",
   "testFrequency",
   "themeModeLabel",
   "towerMap",
@@ -489,6 +496,7 @@ function bindControls() {
 
   els.aimToggleButton.addEventListener("click", toggleAiming);
   els.aimResetButton.addEventListener("click", resetAimSession);
+  bindTimeline();
 }
 
 function initializeTheme() {
@@ -1792,17 +1800,6 @@ function renderSpeedTests() {
   }
 }
 
-const CONNECTION_CHANGE_LABELS = {
-  mode: "Mode change",
-  site: "New cell site",
-  band: "Band change",
-  sector: "Sector change",
-  cell: "Cell change",
-  gateway_restarted: "Gateway restart",
-  firmware_changed: "Firmware",
-  registration_changed: "Registration",
-};
-
 // Handovers and restarts drawn onto the history charts, so a step in signal
 // or throughput can be read against what the radio was doing at the time.
 function connectionMarkers() {
@@ -1893,7 +1890,7 @@ function renderConnectionStability() {
 
   renderOutageHours(outages);
   renderOutageBreakdown(outages);
-  renderConnectionChangeList(changes);
+  renderConnectionTimeline();
 }
 
 function renderOutageHours(outages) {
@@ -1935,73 +1932,601 @@ function renderOutageHours(outages) {
   els.outageHourChart.append(bars, axis);
 }
 
+const TIMELINE_TYPES = {
+  outage: { label: "Outages", title: "Internet outage", icon: "outage", tone: "red" },
+  restart: { label: "Restarts", title: "Gateway restart", icon: "restart", tone: "magenta" },
+  mode: { label: "Mode changes", title: "Mode change", icon: "mode", tone: "blue" },
+  site: { label: "Site changes", title: "New cell site", icon: "site", tone: "blue" },
+  sector: { label: "Sector changes", title: "Sector change", icon: "sector", tone: "teal" },
+  band: { label: "Band changes", title: "Band change", icon: "band", tone: "teal" },
+  cell: { label: "Cell changes", title: "Cell change", icon: "sector", tone: "teal" },
+  firmware: { label: "Firmware", title: "Firmware update", icon: "firmware", tone: "amber" },
+  registration: { label: "Registration", title: "Registration change", icon: "registration", tone: "amber" },
+};
+
+const MODE_SHORT_LABELS = {
+  "5g_sa": "5G SA",
+  nsa: "LTE+5G",
+  lte: "LTE",
+  none: "No service",
+  unknown: "Not recorded",
+};
+
+const DIAGNOSIS_SHORT_LABELS = {
+  upstream: "Radio up, fault upstream",
+  cellular: "Cellular lost",
+  gateway_unreachable: "Gateway silent",
+};
+
+// 24px stroke icons, drawn with currentColor so they follow the theme.
+const ICON_PATHS = {
+  restart: "M12 3v8 M6.3 6.3a8 8 0 1 0 11.4 0",
+  mode: "M4 8h14 M14 4l4 4-4 4 M20 16H6 M10 12l-4 4 4 4",
+  site: "M12 11v10 M8 21h8 M12 11l-4 10 M12 11l4 10 M8.5 7.5a5 5 0 0 1 7 0 M6 5a8.5 8.5 0 0 1 12 0",
+  sector: "M21 12a9 9 0 1 1-3-6.7 M21 4v5h-5",
+  band: "M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0",
+  firmware: "M7 7h10v10H7z M9 3v3 M15 3v3 M9 18v3 M15 18v3 M3 9h3 M3 15h3 M18 9h3 M18 15h3",
+  registration: "M4 20v-3 M9 20v-7 M14 20V9 M19 20V5 M3 3l18 18",
+  outage: "M9 17H7a5 5 0 0 1 0-10h2 M15 7h2a5 5 0 0 1 4 8 M8 12h3 M3 3l18 18",
+  prev: "M15 18l-6-6 6-6",
+  next: "M9 18l6-6-6-6",
+};
+
+const TIMELINE_ICON_SIZE = 22;
+const TIMELINE_ICON_GAP = 3;
+const TIMELINE_MAX_ROWS = 3;
+
+function iconNode(name) {
+  const svg = svgElement("svg", {
+    viewBox: "0 0 24 24",
+    class: "icon",
+    "aria-hidden": "true",
+    focusable: "false",
+  });
+  svg.append(svgElement("path", { d: ICON_PATHS[name] || "" }));
+  return svg;
+}
+
+// Every selectable moment in range: logged changes plus outage periods.
+function timelineEvents() {
+  const history = state.connectionHistory || {};
+  const items = [];
+  for (const change of Array.isArray(history.changes) ? history.changes : []) {
+    const type =
+      change.kind === "connection_changed"
+        ? change.details?.change || "cell"
+        : {
+            gateway_restarted: "restart",
+            firmware_changed: "firmware",
+            registration_changed: "registration",
+          }[change.kind];
+    const time = Date.parse(change.timestamp);
+    if (!TIMELINE_TYPES[type] || !Number.isFinite(time)) {
+      continue;
+    }
+    items.push({ key: `${change.kind}:${change.timestamp}`, type, time, event: change });
+  }
+  const periods = Array.isArray(history.outages?.periods) ? history.outages.periods : [];
+  for (const outage of periods) {
+    const time = Date.parse(outage.started_at);
+    if (!Number.isFinite(time)) {
+      continue;
+    }
+    const end = Date.parse(outage.ended_at || history.range_end);
+    items.push({
+      key: `outage:${outage.started_at}`,
+      type: "outage",
+      time,
+      end: Number.isFinite(end) ? end : time,
+      outage,
+    });
+  }
+  return items.sort((left, right) => left.time - right.time);
+}
+
+// Mode bands between logged switches. Before the change log began the mode
+// is unknown, not whatever the first switch happened to leave.
+function timelineModeSegments(start, end) {
+  const history = state.connectionHistory || {};
+  const knownSince = Date.parse(history.known_since);
+  const switches = (Array.isArray(history.changes) ? history.changes : [])
+    .filter((event) => event.kind === "connection_changed" && event.details?.to)
+    .map((event) => ({ time: Date.parse(event.timestamp), from: event.details.from, to: event.details.to }))
+    .filter((item) => Number.isFinite(item.time))
+    .sort((left, right) => left.time - right.time);
+
+  const segments = [];
+  let cursor = start;
+  if (Number.isFinite(knownSince) && knownSince > start) {
+    cursor = Math.min(knownSince, end);
+    segments.push({ start, end: cursor, mode: { mode: "unknown" } });
+  }
+  let mode = switches.length ? switches[0].from : history.current;
+  for (const item of switches) {
+    if (item.time > cursor) {
+      segments.push({ start: cursor, end: Math.min(item.time, end), mode });
+      cursor = Math.min(item.time, end);
+    }
+    mode = item.to;
+  }
+  if (cursor < end) {
+    segments.push({ start: cursor, end, mode: mode || history.current });
+  }
+  // A sector or site change keeps the mode; draw it as one continuous band.
+  const merged = [];
+  for (const segment of segments) {
+    const previous = merged[merged.length - 1];
+    if (
+      previous &&
+      previous.mode?.mode === segment.mode?.mode &&
+      previous.mode?.bands === segment.mode?.bands
+    ) {
+      previous.end = segment.end;
+    } else {
+      merged.push({ ...segment });
+    }
+  }
+  return merged.filter((segment) => segment.mode && segment.end > segment.start);
+}
+
+function renderConnectionTimeline() {
+  if (state.timelineDragging) {
+    return;
+  }
+  const container = els.connectionTimeline;
+  const history = state.connectionHistory;
+  replaceChildren(container);
+  replaceChildren(els.timelineFilters);
+  const start = Date.parse(history?.range_start);
+  const end = Date.parse(history?.range_end);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    container.append(emptyNode("The timeline appears once connection history loads."));
+    replaceChildren(els.timelineDetail);
+    state.timelineVisible = [];
+    return;
+  }
+  state.timelineRange = { start, span: end - start };
+  const position = (time) => `${clamp(((time - start) / (end - start)) * 100, 0, 100)}%`;
+
+  const items = timelineEvents();
+  renderTimelineFilters(items);
+  const visible = items.filter((item) => !state.timelineHidden.has(item.type));
+  state.timelineVisible = visible;
+
+  const labels = document.createElement("div");
+  labels.className = "timeline-labels";
+  for (const text of ["Mode", "Events", "Online"]) {
+    const label = document.createElement("span");
+    label.textContent = text;
+    labels.append(label);
+  }
+
+  const plot = document.createElement("div");
+  plot.className = "timeline-plot";
+
+  const grid = document.createElement("div");
+  grid.className = "timeline-grid";
+  const axis = document.createElement("div");
+  axis.className = "timeline-axis";
+  // Space date labels by the room available, about 64px each, so a phone
+  // gets fewer of them rather than an overlapping row.
+  const days = (end - start) / 86_400_000;
+  const plotWidth = Math.max(120, container.clientWidth - 80);
+  const labelEvery =
+    [1, 2, 3, 5, 7, 10, 14].find((step) => days / step <= plotWidth / 64) || 14;
+  const midnight = new Date(start);
+  midnight.setHours(24, 0, 0, 0);
+  for (let day = 0, tick = midnight.getTime(); tick < end; day += 1) {
+    const line = document.createElement("i");
+    line.style.left = position(tick);
+    grid.append(line);
+    if (day % labelEvery === 0) {
+      const label = document.createElement("span");
+      label.style.left = position(tick);
+      label.textContent = new Date(tick).toLocaleDateString([], { month: "short", day: "numeric" });
+      axis.append(label);
+    }
+    const next = new Date(tick);
+    next.setDate(next.getDate() + 1);
+    tick = next.getTime();
+  }
+
+  const modeLane = document.createElement("div");
+  modeLane.className = "timeline-lane timeline-lane--mode";
+  for (const segment of timelineModeSegments(start, end)) {
+    const bar = document.createElement("span");
+    bar.className = `timeline-segment mode--${segment.mode.mode || "unknown"}`;
+    bar.style.left = position(segment.start);
+    bar.style.width = `${((segment.end - segment.start) / (end - start)) * 100}%`;
+    bar.title = `${modeChipText(segment.mode)}: ${formatDate(new Date(segment.start))} to ${formatDate(new Date(segment.end))}`;
+    modeLane.append(bar);
+  }
+
+  const eventLane = document.createElement("div");
+  eventLane.className = "timeline-lane timeline-lane--events";
+  const internetLane = document.createElement("div");
+  internetLane.className = "timeline-lane timeline-lane--internet";
+  for (const item of visible) {
+    const type = TIMELINE_TYPES[item.type];
+    if (item.type === "outage") {
+      const bar = document.createElement("span");
+      bar.className = "timeline-outage";
+      bar.dataset.key = item.key;
+      bar.style.left = position(item.time);
+      bar.style.width = `${((item.end - item.time) / (end - start)) * 100}%`;
+      bar.title = `${type.title}, ${formatOutageDuration(item.outage.duration_seconds)}: ${formatDate(new Date(item.time))}`;
+      internetLane.append(bar);
+      continue;
+    }
+    const marker = document.createElement("span");
+    marker.className = `timeline-event tone--${type.tone}`;
+    marker.dataset.key = item.key;
+    marker.dataset.time = String(item.time);
+    marker.style.left = position(item.time);
+    marker.title = `${type.title}: ${formatDate(new Date(item.time))}`;
+    marker.append(iconNode(type.icon));
+    eventLane.append(marker);
+  }
+
+  const cursor = document.createElement("div");
+  cursor.className = "timeline-cursor";
+  cursor.append(document.createElement("b"));
+
+  plot.append(grid, modeLane, eventLane, internetLane, axis, cursor);
+  container.append(labels, plot);
+  layoutTimelineIcons();
+
+  const selected =
+    visible.find((item) => item.key === state.timelineSelectedKey) ||
+    [...visible].reverse().find((item) => item.type !== "outage") ||
+    visible[visible.length - 1] ||
+    null;
+  selectTimelineItem(selected?.key ?? null);
+}
+
+// Stack icons that would overlap into up to three rows; beyond that they
+// overlap, which only happens with several changes within minutes.
+function layoutTimelineIcons() {
+  const lane = els.connectionTimeline.querySelector(".timeline-lane--events");
+  if (!lane) {
+    return;
+  }
+  const width = lane.clientWidth;
+  const rowEnds = [];
+  for (const marker of lane.querySelectorAll(".timeline-event")) {
+    const left = (parseFloat(marker.style.left) / 100) * width - TIMELINE_ICON_SIZE / 2;
+    let row = rowEnds.findIndex((rowEnd) => rowEnd + TIMELINE_ICON_GAP <= left);
+    if (row === -1) {
+      row = rowEnds.length < TIMELINE_MAX_ROWS
+        ? rowEnds.length
+        : rowEnds.indexOf(Math.min(...rowEnds));
+    }
+    rowEnds[row] = left + TIMELINE_ICON_SIZE;
+    marker.style.top = `${row * (TIMELINE_ICON_SIZE + 4)}px`;
+  }
+  lane.style.height = `${Math.max(1, rowEnds.length) * (TIMELINE_ICON_SIZE + 4)}px`;
+  const label = els.connectionTimeline.querySelector(".timeline-labels span:nth-child(2)");
+  if (label) {
+    label.style.height = lane.style.height;
+  }
+}
+
+function selectTimelineItem(key, { moveCursor = true } = {}) {
+  const visible = state.timelineVisible || [];
+  const selected = visible.find((item) => item.key === key) || null;
+  state.timelineSelectedKey = selected?.key ?? null;
+  els.connectionTimeline.querySelectorAll("[data-key]").forEach((node) => {
+    node.classList.toggle("is-selected", node.dataset.key === state.timelineSelectedKey);
+  });
+  if (moveCursor) {
+    positionTimelineCursor(selected?.time);
+  }
+  const index = selected ? visible.indexOf(selected) : -1;
+  els.connectionTimeline.setAttribute("aria-valuemin", "0");
+  els.connectionTimeline.setAttribute("aria-valuemax", String(Math.max(0, visible.length - 1)));
+  els.connectionTimeline.setAttribute("aria-valuenow", String(Math.max(0, index)));
+  els.connectionTimeline.setAttribute(
+    "aria-valuetext",
+    selected
+      ? `${TIMELINE_TYPES[selected.type].title}, ${formatDate(new Date(selected.time))}`
+      : "No events"
+  );
+  renderTimelineDetail(selected, index, visible.length);
+}
+
+function positionTimelineCursor(time) {
+  const cursor = els.connectionTimeline.querySelector(".timeline-cursor");
+  const range = state.timelineRange;
+  if (!cursor || !range) {
+    return;
+  }
+  cursor.hidden = !Number.isFinite(time);
+  if (Number.isFinite(time)) {
+    cursor.style.left = `${clamp(((time - range.start) / range.span) * 100, 0, 100)}%`;
+  }
+}
+
+function stepTimeline(delta) {
+  const visible = state.timelineVisible || [];
+  if (!visible.length) {
+    return;
+  }
+  const current = visible.findIndex((item) => item.key === state.timelineSelectedKey);
+  const next = current === -1
+    ? (delta > 0 ? 0 : visible.length - 1)
+    : clamp(current + delta, 0, visible.length - 1);
+  selectTimelineItem(visible[next].key);
+}
+
+// Dragging moves the cursor freely and selects whichever event is nearest in
+// time; letting go snaps the cursor onto that event.
+function scrubTimeline(clientX, forcedKey) {
+  const plot = els.connectionTimeline.querySelector(".timeline-plot");
+  const range = state.timelineRange;
+  const visible = state.timelineVisible || [];
+  if (!plot || !range || !visible.length) {
+    return;
+  }
+  const rect = plot.getBoundingClientRect();
+  const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+  const time = range.start + ratio * range.span;
+  let nearest = forcedKey ? visible.find((item) => item.key === forcedKey) : null;
+  if (!nearest) {
+    nearest = visible.reduce((best, item) =>
+      Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best
+    );
+  }
+  positionTimelineCursor(forcedKey ? nearest.time : time);
+  if (nearest.key !== state.timelineSelectedKey) {
+    selectTimelineItem(nearest.key, { moveCursor: false });
+  }
+}
+
+function bindTimeline() {
+  const timeline = els.connectionTimeline;
+  const finish = () => {
+    if (!state.timelineDragging) {
+      return;
+    }
+    state.timelineDragging = false;
+    timeline.classList.remove("is-dragging");
+    const selected = (state.timelineVisible || []).find(
+      (item) => item.key === state.timelineSelectedKey
+    );
+    positionTimelineCursor(selected?.time);
+  };
+  timeline.addEventListener("pointerdown", (event) => {
+    if (!state.timelineVisible?.length || event.button > 0) {
+      return;
+    }
+    state.timelineDragging = true;
+    timeline.classList.add("is-dragging");
+    timeline.setPointerCapture(event.pointerId);
+    timeline.focus({ preventScroll: true });
+    scrubTimeline(event.clientX, event.target.closest("[data-key]")?.dataset.key);
+  });
+  timeline.addEventListener("pointermove", (event) => {
+    if (state.timelineDragging) {
+      scrubTimeline(event.clientX);
+    }
+  });
+  timeline.addEventListener("pointerup", finish);
+  timeline.addEventListener("pointercancel", finish);
+  timeline.addEventListener("keydown", (event) => {
+    const steps = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: 1, ArrowDown: -1 };
+    if (event.key in steps) {
+      event.preventDefault();
+      stepTimeline(steps[event.key]);
+    } else if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      stepTimeline(event.key === "Home" ? -Infinity : Infinity);
+    }
+  });
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(() => window.requestAnimationFrame(layoutTimelineIcons)).observe(timeline);
+  }
+}
+
+function renderTimelineFilters(items) {
+  const counts = {};
+  for (const item of items) {
+    counts[item.type] = (counts[item.type] || 0) + 1;
+  }
+  for (const [type, definition] of Object.entries(TIMELINE_TYPES)) {
+    if (!counts[type]) {
+      continue;
+    }
+    const hidden = state.timelineHidden.has(type);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `timeline-filter tone--${definition.tone}`;
+    button.setAttribute("aria-pressed", String(!hidden));
+    button.title = `${hidden ? "Show" : "Hide"} ${definition.label.toLowerCase()} (${counts[type]})`;
+    const count = document.createElement("span");
+    count.textContent = String(counts[type]);
+    button.append(iconNode(definition.icon), count);
+    button.addEventListener("click", () => {
+      if (hidden) {
+        state.timelineHidden.delete(type);
+      } else {
+        state.timelineHidden.add(type);
+      }
+      renderConnectionTimeline();
+    });
+    els.timelineFilters.append(button);
+  }
+}
+
+function renderTimelineDetail(item, index, total) {
+  const detail = els.timelineDetail;
+  replaceChildren(detail);
+  const stepButton = (direction, disabled) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "timeline-step";
+    button.disabled = disabled;
+    button.setAttribute("aria-label", direction < 0 ? "Previous event" : "Next event");
+    button.append(iconNode(direction < 0 ? "prev" : "next"));
+    button.addEventListener("click", () => stepTimeline(direction));
+    return button;
+  };
+
+  const body = document.createElement("div");
+  body.className = "timeline-detail-body";
+  if (!item) {
+    body.append(emptyNode("No events in this range."));
+    detail.append(stepButton(-1, true), body, stepButton(1, true));
+    return;
+  }
+
+  const type = TIMELINE_TYPES[item.type];
+  const badge = document.createElement("span");
+  badge.className = `timeline-detail-icon tone--${type.tone}`;
+  badge.append(iconNode(type.icon));
+
+  const header = document.createElement("div");
+  header.className = "timeline-detail-header";
+  const title = document.createElement("strong");
+  title.textContent = type.title;
+  const when = document.createElement("span");
+  when.textContent = `${formatDate(new Date(item.time))} · ${formatRelative(item.time)}`;
+  const position = document.createElement("small");
+  position.textContent = `${index + 1} / ${total}`;
+  header.append(title, when, position);
+
+  const chips = document.createElement("div");
+  chips.className = "timeline-chips";
+  chips.append(...timelineChips(item));
+  body.append(header, chips);
+  detail.append(stepButton(-1, index <= 0), badge, body, stepButton(1, index >= total - 1));
+}
+
+function timelineChips(item) {
+  const details = item.event?.details || {};
+  const arrow = () => {
+    const node = document.createElement("span");
+    node.className = "timeline-arrow";
+    node.textContent = "→";
+    return node;
+  };
+  switch (item.type) {
+    case "outage": {
+      const outage = item.outage;
+      return [
+        chip(outage.ongoing ? `${formatOutageDuration(outage.duration_seconds)} so far` : formatOutageDuration(outage.duration_seconds), "red"),
+        DIAGNOSIS_SHORT_LABELS[outage.diagnosis]
+          ? chip(DIAGNOSIS_SHORT_LABELS[outage.diagnosis])
+          : chip("Not diagnosed", "muted"),
+      ];
+    }
+    case "restart":
+      return [
+        chip(`Up ${formatOutageDuration(details.previous_uptime_seconds)} before`),
+        details.requested_by_app
+          ? chip("Requested by this app", "muted")
+          : chip("Not requested by this app", "magenta"),
+      ];
+    case "site":
+      return [chip(`Site ${details.from?.site ?? "?"}`), arrow(), chip(`Site ${details.to?.site ?? "?"}`), modeChip(details.to)];
+    case "sector": {
+      const radio = ["nr", "lte"].find(
+        (key) => details.from?.cells?.[key]?.cell_id !== details.to?.cells?.[key]?.cell_id
+      ) || "nr";
+      return [
+        chip(`${radio === "nr" ? "5G" : "LTE"} cell ${details.from?.cells?.[radio]?.cell_id ?? "?"}`),
+        arrow(),
+        chip(`cell ${details.to?.cells?.[radio]?.cell_id ?? "?"}`),
+        chip(`Site ${details.to?.site ?? "?"}`, "muted"),
+      ];
+    }
+    case "firmware":
+    case "registration":
+      return [chip(String(details.from ?? "?")), arrow(), chip(String(details.to ?? "?"))];
+    default:
+      return [modeChip(details.from), arrow(), modeChip(details.to)];
+  }
+}
+
+function chip(text, tone = "") {
+  const node = document.createElement("span");
+  node.className = `timeline-chip${tone ? ` tone--${tone}` : ""}`;
+  node.textContent = text;
+  return node;
+}
+
+function modeChipText(mode) {
+  const label = MODE_SHORT_LABELS[mode?.mode] || "Unknown";
+  return mode?.bands ? `${label} · ${mode.bands}` : label;
+}
+
+function modeChip(mode) {
+  const node = chip(modeChipText(mode));
+  const dot = document.createElement("i");
+  dot.className = `mode-dot mode--${mode?.mode || "unknown"}`;
+  node.prepend(dot);
+  return node;
+}
+
+function formatRelative(time) {
+  const minutes = Math.round((Date.now() - time) / 60000);
+  if (minutes < 1) {
+    return "just now";
+  }
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `${hours} h ago`;
+  }
+  return `${Math.round(hours / 24)} days ago`;
+}
+
 function renderOutageBreakdown(outages) {
   replaceChildren(els.outageBreakdown);
   const buckets = Array.isArray(outages.duration_buckets) ? outages.duration_buckets : [];
-  els.outageBreakdown.hidden = !outages.count;
+  if (!outages.count) {
+    els.outageBreakdown.append(emptyNode("No outages in this range."));
+    setText(els.outageDiagnosis, "");
+    return;
+  }
+  const largest = Math.max(1, ...buckets.map((bucket) => bucket.count));
   for (const bucket of buckets) {
-    const item = document.createElement("article");
-    item.className = "daypart-item";
+    const row = document.createElement("div");
+    row.className = "bar-row";
     const label = document.createElement("span");
     label.textContent = bucket.label;
+    const track = document.createElement("div");
+    track.className = "bar-track";
+    const fill = document.createElement("i");
+    fill.style.setProperty("--level", String(bucket.count / largest));
+    track.append(fill);
     const value = document.createElement("strong");
     value.textContent = String(bucket.count);
-    item.append(label, value);
-    els.outageBreakdown.append(item);
+    row.append(label, track, value);
+    els.outageBreakdown.append(row);
   }
 
   const notes = [];
   const count = Number(outages.count || 0);
-  if (count && outages.peak_hour_count >= 3 && outages.peak_hour_count / count >= 0.25) {
+  if (outages.peak_hour_count >= 3 && outages.peak_hour_count / count >= 0.25) {
     notes.push(
-      `${outages.peak_hour_count} of ${count} began between ${formatHour(outages.peak_hour)} and ` +
-        `${formatHour((outages.peak_hour + 1) % 24)}. A fixed time window points to scheduled ` +
-        "network work rather than signal."
+      `${outages.peak_hour_count} of ${count} started ${formatHour(outages.peak_hour)}–` +
+        `${formatHour((outages.peak_hour + 1) % 24)}, a fixed window that suggests scheduled network work.`
     );
   }
   const diagnoses = Array.isArray(outages.diagnoses) ? outages.diagnoses : [];
   const diagnosed = diagnoses.filter((item) => item.key !== "unknown");
-  const undiagnosed = diagnoses.find((item) => item.key === "unknown")?.count || 0;
   if (diagnosed.length) {
     notes.push(
-      `At outage start: ${diagnosed.map((item) => `${item.count} ${item.label.toLowerCase()}`).join("; ")}.`
+      diagnosed
+        .map((item) => `${DIAGNOSIS_SHORT_LABELS[item.key] || item.label}: ${item.count}`)
+        .join(" · ")
     );
-  }
-  if (undiagnosed) {
-    notes.push(
-      diagnosed.length
-        ? `${undiagnosed} earlier outage${undiagnosed === 1 ? "" : "s"} predate diagnosis.`
-        : "New outages record whether the radio was still connected when they began."
-    );
+  } else {
+    notes.push("New outages record whether the radio was still connected.");
   }
   setText(els.outageDiagnosis, notes.join(" "));
-}
-
-function renderConnectionChangeList(changes) {
-  replaceChildren(els.connectionChangeList);
-  if (!changes.length) {
-    els.connectionChangeList.append(
-      emptyNode("No handovers, restarts, or firmware changes in this range.")
-    );
-    return;
-  }
-  for (const event of changes.slice(0, 12)) {
-    const item = document.createElement("article");
-    item.className = `event-item change-item change-item--${event.kind}`;
-    const header = document.createElement("div");
-    const kind = document.createElement("strong");
-    kind.textContent =
-      CONNECTION_CHANGE_LABELS[event.details?.change] ||
-      CONNECTION_CHANGE_LABELS[event.kind] ||
-      humanize(event.kind);
-    const time = document.createElement("span");
-    time.textContent = formatDate(event.timestamp);
-    header.append(kind, time);
-    const message = document.createElement("p");
-    message.textContent = event.message;
-    item.append(header, message);
-    els.connectionChangeList.append(item);
-  }
 }
 
 function formatHour(hour) {
@@ -2024,6 +2549,9 @@ function formatOutageDuration(seconds) {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const secs = total % 60;
+  if (hours >= 48) {
+    return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+  }
   if (hours) {
     return `${hours} h ${minutes} min`;
   }

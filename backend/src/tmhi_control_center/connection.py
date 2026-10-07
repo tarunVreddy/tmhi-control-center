@@ -47,6 +47,11 @@ WATCHDOG_REBOOT_LAG = timedelta(minutes=2)
 # Backfilled speed tests borrow the nearest snapshot within this window.
 CONTEXT_MATCH_WINDOW_SECONDS = 300
 
+MAX_OUTAGE_PERIODS = 1000
+
+# When the change log begins: modes before this moment are unknown, not
+# whatever the first logged change happened to switch away from.
+CONNECTION_HISTORY_START_KEY = "connection_history_start"
 CONNECTION_BACKFILL_KEY = "connection_history_backfilled"
 SPEED_CONTEXT_BACKFILL_KEY = "speed_test_context_backfilled"
 
@@ -173,6 +178,14 @@ class ConnectionChangeTracker:
 
     async def initialize(self) -> None:
         await backfill_history(self.store)
+        if not await self.store.get_meta(CONNECTION_HISTORY_START_KEY):
+            # Installs that backfilled before this key existed: the oldest
+            # snapshot still stored is the best remaining record of the start.
+            oldest = await self.store.oldest_telemetry_timestamp()
+            await self.store.set_meta(
+                CONNECTION_HISTORY_START_KEY,
+                (oldest or datetime.now(timezone.utc)).isoformat(),
+            )
         self._previous = await self.store.latest_telemetry_snapshot()
 
     async def observe(
@@ -225,6 +238,8 @@ async def backfill_history(store: EventStore) -> dict[str, int]:
         for event in events:
             event[3]["backfilled"] = True
         recorded_events = await store.record_many(events)
+        start = snapshots[0][0] if snapshots else datetime.now(timezone.utc)
+        await store.set_meta(CONNECTION_HISTORY_START_KEY, start.isoformat())
         await store.set_meta(CONNECTION_BACKFILL_KEY, _now_text())
 
     if not context_done:
@@ -361,6 +376,9 @@ def outage_summary(
         "duration_buckets": buckets,
         "diagnoses": diagnoses,
         "recent": list(reversed(outages[-10:])),
+        # Every outage in range, oldest first, for drawing on a timeline. The
+        # cap only matters for a link that is down several times an hour.
+        "periods": outages[-MAX_OUTAGE_PERIODS:],
     }
 
 

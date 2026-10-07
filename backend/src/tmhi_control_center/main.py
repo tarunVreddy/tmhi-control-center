@@ -22,6 +22,7 @@ from .advanced_modem import (
 from .config import Settings
 from .connection import (
     CONNECTION_EVENT_KINDS,
+    CONNECTION_HISTORY_START_KEY,
     OUTAGE_EVENT_KINDS,
     ConnectionChangeTracker,
     connection_context,
@@ -462,10 +463,13 @@ async def connection_history(
     latest = telemetry_collector.latest
     return {
         "range_days": days,
+        "range_start": since.isoformat(),
+        "range_end": now.isoformat(),
+        "known_since": await store.get_meta(CONNECTION_HISTORY_START_KEY),
         "current": connection_state(compact_telemetry_snapshot(latest))
         if latest
         else None,
-        "changes": list(reversed(changes))[:100],
+        "changes": list(reversed(changes))[:500],
         "change_count": sum(1 for event in changes if event["kind"] == "connection_changed"),
         "restart_count": len(restarts),
         "unrequested_restart_count": sum(
