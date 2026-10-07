@@ -1830,6 +1830,10 @@ summary:focus-visible {
 }
 
 .leaflet-container {
+  /* Leaflet stacks its panes and controls at z-index 400-1000. Isolating the
+     map keeps those inside it, so it scrolls under the sticky header and the
+     phone tab bar instead of painting over them. */
+  isolation: isolate;
   color: #172033;
   font: inherit;
 }
