@@ -454,14 +454,23 @@ function bindControls() {
     setTheme(els.darkModeToggle.checked ? "dark" : "light", { persist: true });
   });
 
+  // A view switch starts at the top of the new view; otherwise the phone tab
+  // bar leaves the reader partway down a page they have not seen.
+  const openView = (view) => {
+    const changed = view !== state.activeView;
+    activateView(view);
+    if (changed) {
+      window.scrollTo({ top: 0 });
+    }
+  };
   document.querySelectorAll("[data-view]").forEach((button) => {
-    button.addEventListener("click", () => activateView(button.dataset.view));
+    button.addEventListener("click", () => openView(button.dataset.view));
     button.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") {
         return;
       }
       event.preventDefault();
-      activateView(button.dataset.view);
+      openView(button.dataset.view);
     });
   });
   document.querySelectorAll(".tab").forEach((button) => {
@@ -527,7 +536,13 @@ function selectView(name) {
   );
   state.activeView = availableViews.has(requestedView) ? requestedView : DEFAULT_VIEW;
   document.querySelectorAll(".nav-item[data-view]").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.view === state.activeView);
+    const active = button.dataset.view === state.activeView;
+    button.classList.toggle("is-active", active);
+    if (active) {
+      button.setAttribute("aria-current", "page");
+    } else {
+      button.removeAttribute("aria-current");
+    }
   });
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("is-active", panel.dataset.viewPanel === state.activeView);

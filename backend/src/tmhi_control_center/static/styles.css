@@ -188,6 +188,11 @@ summary:focus-visible {
   box-shadow: inset 3px 0 0 var(--magenta);
 }
 
+.nav-icon,
+.nav-short {
+  display: none;
+}
+
 .nav-index {
   color: var(--magenta);
   font-size: 12px;
@@ -2769,16 +2774,36 @@ th {
   .side-nav {
     min-width: 0;
     width: 100%;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 6px;
   }
 
   .nav-item {
     grid-template-columns: 1fr;
-    min-height: 58px;
+    justify-items: center;
+    gap: 5px;
+    min-height: 64px;
+    padding: 8px 4px;
+    text-align: center;
   }
 
-  .nav-index {
+  .nav-item.is-active {
+    box-shadow: inset 0 -3px 0 var(--magenta);
+  }
+
+  .nav-index,
+  .nav-item small {
     display: none;
+  }
+
+  .nav-icon {
+    display: block;
+    width: 22px;
+    height: 22px;
+  }
+
+  .nav-item.is-active .nav-icon {
+    color: var(--magenta);
   }
 
   .sidebar-status {
@@ -2803,6 +2828,50 @@ th {
 }
 
 @media (max-width: 760px) {
+  /* Room for the fixed tab bar so it never covers the end of a page. */
+  .app-shell {
+    padding-bottom: calc(66px + env(safe-area-inset-bottom));
+  }
+
+  .side-nav {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    gap: 2px;
+    padding: 6px max(6px, env(safe-area-inset-left))
+      calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-right));
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--sidebar);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .nav-item {
+    gap: 3px;
+    min-height: 52px;
+    padding: 5px 2px;
+    border: 0;
+    border-radius: 10px;
+  }
+
+  .nav-item.is-active {
+    box-shadow: none;
+  }
+
+  .nav-item strong {
+    display: none;
+  }
+
+  .nav-short {
+    display: block;
+    color: inherit;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.1;
+    white-space: nowrap;
+  }
+
   .timeline {
     grid-template-columns: 48px minmax(0, 1fr);
     gap: 6px;
@@ -2978,28 +3047,6 @@ th {
   .brand-panel {
     min-height: 56px;
     padding: 8px 10px;
-  }
-
-  .side-nav {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 4px;
-    scrollbar-width: none;
-  }
-
-  .side-nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .nav-item {
-    min-height: 44px;
-    flex: 0 0 112px;
-    padding: 8px 9px;
-  }
-
-  .nav-item small {
-    display: none;
   }
 
   .sidebar-status {

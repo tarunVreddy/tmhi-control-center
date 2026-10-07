@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#111722" />
     <title>TMHI Control Center</title>
@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
     <link rel="manifest" href="/static/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261007-deploy-8" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261007-deploy-9" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,6 +27,8 @@
 
         <nav class="side-nav" aria-label="Main navigation">
           <button class="nav-item is-active" type="button" data-view="dashboard">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h7v7H4z M13 4h7v4h-7z M13 10h7v10h-7z M4 13h7v7H4z" /></svg>
+            <span class="nav-short" aria-hidden="true">Home</span>
             <span class="nav-index">01</span>
             <span>
               <strong>Dashboard</strong>
@@ -34,6 +36,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="devices">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 5h13v9H3z M1 18h17 M19 8h4v11h-4z" /></svg>
+            <span class="nav-short" aria-hidden="true">Devices</span>
             <span class="nav-index">02</span>
             <span>
               <strong>Devices</strong>
@@ -41,6 +45,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="map">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z M9 4v14 M15 6v14" /></svg>
+            <span class="nav-short" aria-hidden="true">Map</span>
             <span class="nav-index">03</span>
             <span>
               <strong>Map</strong>
@@ -48,6 +54,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="aim">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0z M12 2v5 M12 17v5 M2 12h5 M17 12h5" /></svg>
+            <span class="nav-short" aria-hidden="true">Aim</span>
             <span class="nav-index">04</span>
             <span>
               <strong>Aim</strong>
@@ -55,6 +63,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="homelab">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h16v6H4z M4 14h16v6H4z M8 7h.01 M8 17h.01 M12 7h4 M12 17h4" /></svg>
+            <span class="nav-short" aria-hidden="true">Lab</span>
             <span class="nav-index">05</span>
             <span>
               <strong>Homelab</strong>
@@ -62,6 +72,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="diagnostics">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+            <span class="nav-short" aria-hidden="true">Logs</span>
             <span class="nav-index">06</span>
             <span>
               <strong>Diagnostics</strong>
@@ -69,6 +81,8 @@
             </span>
           </button>
           <button class="nav-item" type="button" data-view="settings">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 6h9 M17 6h3 M15 4v4 M4 12h3 M11 12h9 M9 10v4 M4 18h11 M19 18h1 M17 16v4" /></svg>
+            <span class="nav-short" aria-hidden="true">Settings</span>
             <span class="nav-index">07</span>
             <span>
               <strong>Settings</strong>
@@ -1335,6 +1349,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-    <script src="/static/app.js?v=20261007-deploy-8" defer></script>
+    <script src="/static/app.js?v=20261007-deploy-9" defer></script>
   </body>
 </html>
