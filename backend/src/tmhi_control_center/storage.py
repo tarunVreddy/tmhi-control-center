@@ -96,6 +96,16 @@ class EventStore:
                     "CREATE INDEX IF NOT EXISTS idx_speed_tests_timestamp "
                     "ON speed_tests(timestamp)"
                 )
+                speed_test_columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(speed_tests)")
+                }
+                if "context_json" not in speed_test_columns:
+                    # The radio connection each test ran on. Added after the
+                    # table shipped, so older databases gain it in place.
+                    connection.execute(
+                        "ALTER TABLE speed_tests ADD COLUMN context_json TEXT"
+                    )
                 connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS speed_test_schedule (
@@ -103,6 +113,14 @@ class EventStore:
                         next_run_at REAL,
                         slot_index INTEGER NOT NULL DEFAULT 0,
                         updated_at REAL NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
                     )
                     """
                 )
@@ -129,6 +147,90 @@ class EventStore:
 
         async with self._lock:
             await asyncio.to_thread(_record)
+
+    async def record_many(
+        self,
+        events: Iterable[tuple[datetime, str, str, dict[str, Any]]],
+    ) -> int:
+        rows = [
+            (
+                timestamp.timestamp(),
+                kind,
+                message,
+                json.dumps(details or {}, separators=(",", ":"), default=str),
+            )
+            for timestamp, kind, message, details in events
+        ]
+        if not rows:
+            return 0
+
+        def _record() -> None:
+            with self._connect() as connection:
+                connection.executemany(
+                    "INSERT INTO events(timestamp, kind, message, details_json) VALUES (?, ?, ?, ?)",
+                    rows,
+                )
+
+        async with self._lock:
+            await asyncio.to_thread(_record)
+        return len(rows)
+
+    async def events_since(
+        self,
+        kinds: Iterable[str],
+        since: datetime,
+    ) -> list[dict[str, Any]]:
+        kind_list = tuple(kinds)
+        if not kind_list:
+            return []
+        placeholders = ",".join("?" for _ in kind_list)
+
+        def _events() -> list[dict[str, Any]]:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    f"SELECT id, timestamp, kind, message, details_json FROM events "
+                    f"WHERE kind IN ({placeholders}) AND timestamp >= ? "
+                    f"ORDER BY timestamp ASC",
+                    (*kind_list, since.timestamp()),
+                ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "timestamp": datetime.fromtimestamp(
+                        row["timestamp"], timezone.utc
+                    ).isoformat(),
+                    "kind": row["kind"],
+                    "message": row["message"],
+                    "details": json.loads(row["details_json"]),
+                }
+                for row in rows
+            ]
+
+        async with self._lock:
+            return await asyncio.to_thread(_events)
+
+    async def get_meta(self, key: str) -> str | None:
+        def _get() -> str | None:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT value FROM app_meta WHERE key = ?", (key,)
+                ).fetchone()
+            return row["value"] if row else None
+
+        async with self._lock:
+            return await asyncio.to_thread(_get)
+
+    async def set_meta(self, key: str, value: str) -> None:
+        def _set() -> None:
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO app_meta(key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
+
+        async with self._lock:
+            await asyncio.to_thread(_set)
 
     async def recent(self, limit: int = MAX_RECENT_EVENTS) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, MAX_RECENT_EVENTS))
@@ -201,7 +303,7 @@ class EventStore:
         )
 
     async def record_telemetry(self, overview: dict[str, Any]) -> bool:
-        snapshot = _compact_telemetry_snapshot(overview)
+        snapshot = compact_telemetry_snapshot(overview)
         if snapshot is None:
             return False
         observed_at = _parse_timestamp(overview.get("observed_at"))
@@ -262,6 +364,79 @@ class EventStore:
             "points": points,
         }
 
+    async def telemetry_snapshots(self) -> list[tuple[datetime, dict[str, Any]]]:
+        """Every stored snapshot, oldest first, at full resolution."""
+
+        def _all() -> list[tuple[datetime, dict[str, Any]]]:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT timestamp, payload_json FROM telemetry_snapshots "
+                    "ORDER BY timestamp ASC"
+                ).fetchall()
+            return [
+                (
+                    datetime.fromtimestamp(row["timestamp"], timezone.utc),
+                    json.loads(row["payload_json"]),
+                )
+                for row in rows
+            ]
+
+        async with self._lock:
+            return await asyncio.to_thread(_all)
+
+    async def latest_telemetry_snapshot(
+        self,
+    ) -> tuple[datetime, dict[str, Any]] | None:
+        def _latest() -> tuple[datetime, dict[str, Any]] | None:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT timestamp, payload_json FROM telemetry_snapshots "
+                    "ORDER BY timestamp DESC LIMIT 1"
+                ).fetchone()
+            if row is None:
+                return None
+            return (
+                datetime.fromtimestamp(row["timestamp"], timezone.utc),
+                json.loads(row["payload_json"]),
+            )
+
+        async with self._lock:
+            return await asyncio.to_thread(_latest)
+
+    async def speed_tests_without_context(self) -> list[dict[str, Any]]:
+        def _missing() -> list[dict[str, Any]]:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM speed_tests WHERE context_json IS NULL "
+                    "ORDER BY timestamp ASC"
+                ).fetchall()
+            return [_speed_test_row(row) for row in rows]
+
+        async with self._lock:
+            return await asyncio.to_thread(_missing)
+
+    async def set_speed_test_contexts(
+        self,
+        contexts: Iterable[tuple[int, dict[str, Any]]],
+    ) -> int:
+        rows = [
+            (json.dumps(context, separators=(",", ":"), default=str), test_id)
+            for test_id, context in contexts
+        ]
+        if not rows:
+            return 0
+
+        def _set() -> None:
+            with self._connect() as connection:
+                connection.executemany(
+                    "UPDATE speed_tests SET context_json = ? WHERE id = ?",
+                    rows,
+                )
+
+        async with self._lock:
+            await asyncio.to_thread(_set)
+        return len(rows)
+
     async def record_speed_test(
         self,
         result: dict[str, Any],
@@ -273,6 +448,7 @@ class EventStore:
         cutoff = datetime.now(timezone.utc) - timedelta(
             days=self.speed_test_retention_days
         )
+        context = result.get("context") if isinstance(result.get("context"), dict) else None
 
         def _record() -> None:
             with self._connect() as connection:
@@ -281,8 +457,9 @@ class EventStore:
                     INSERT INTO speed_tests(
                         timestamp, trigger, daypart, profile, provider, success,
                         download_mbps, upload_mbps, latency_ms, jitter_ms,
-                        bytes_downloaded, bytes_uploaded, duration_seconds, error
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        bytes_downloaded, bytes_uploaded, duration_seconds, error,
+                        context_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         observed_at.timestamp(),
@@ -299,6 +476,9 @@ class EventStore:
                         int(result.get("bytes_uploaded") or 0),
                         float(result.get("duration_seconds") or 0),
                         result.get("error"),
+                        json.dumps(context, separators=(",", ":"), default=str)
+                        if context
+                        else None,
                     ),
                 )
                 connection.execute(
@@ -375,6 +555,7 @@ class EventStore:
             "total_bytes": total_bytes,
             "averages": _speed_test_averages(successful),
             "dayparts": _speed_test_dayparts(successful),
+            "connections": _speed_test_connections(successful),
             "points": points,
         }
 
@@ -429,7 +610,7 @@ class EventStore:
             await asyncio.to_thread(_set)
 
 
-def _compact_telemetry_snapshot(overview: dict[str, Any]) -> dict[str, Any] | None:
+def compact_telemetry_snapshot(overview: dict[str, Any]) -> dict[str, Any] | None:
     detection = overview.get("detection")
     if not isinstance(detection, dict) or detection.get("reachable") is not True:
         return None
@@ -460,6 +641,7 @@ def _compact_telemetry_snapshot(overview: dict[str, Any]) -> dict[str, Any] | No
                 "pci": cell.get("pci"),
                 "arfcn": cell.get("arfcn"),
                 "cell_id": cell.get("cell_id"),
+                "node_id": cell.get("node_id"),
                 "metrics": metrics_payload,
             }
 
@@ -475,13 +657,16 @@ def _compact_telemetry_snapshot(overview: dict[str, Any]) -> dict[str, Any] | No
         if isinstance(overview.get("connection"), dict)
         else {}
     )
+    device = overview.get("device") if isinstance(overview.get("device"), dict) else {}
     snapshot = {
         "signal_score": signal.get("score"),
         "radios": radios_payload,
         "system": {
             "temperature_c": temperature.get("celsius"),
             "uptime_seconds": system.get("uptime_seconds"),
+            "registration": system.get("registration"),
         },
+        "device": {"firmware": device.get("firmware")},
         "connection": {
             "mode": connection.get("mode") or connection.get("network_type"),
             "band": connection.get("band"),
@@ -552,6 +737,7 @@ def _speed_test_row(row: sqlite3.Row) -> dict[str, Any]:
         "bytes_uploaded": int(row["bytes_uploaded"]),
         "duration_seconds": row["duration_seconds"],
         "error": row["error"],
+        "context": json.loads(row["context_json"]) if row["context_json"] else None,
     }
 
 
@@ -566,6 +752,34 @@ def _speed_test_averages(points: list[dict[str, Any]]) -> dict[str, float | None
         "latency_ms": average("latency_ms"),
         "jitter_ms": average("jitter_ms"),
     }
+
+
+def _speed_test_connections(points: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Averages per radio connection, most-sampled first.
+
+    Keyed by mode and bands rather than cell, so a sector swap on the same
+    site does not split the comparison into groups too small to read.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    labels: dict[str, str] = {}
+    for point in points:
+        context = point.get("context")
+        if not isinstance(context, dict) or context.get("mode") in (None, "none"):
+            continue
+        key = f"{context.get('mode')}|{context.get('bands') or ''}"
+        groups.setdefault(key, []).append(point)
+        bands = context.get("bands")
+        labels[key] = f"{context.get('label')} · {bands}" if bands else str(context.get("label"))
+    result = [
+        {
+            "key": key,
+            "label": labels[key],
+            "count": len(matching),
+            **_speed_test_averages(matching),
+        }
+        for key, matching in groups.items()
+    ]
+    return sorted(result, key=lambda item: item["count"], reverse=True)
 
 
 def _speed_test_dayparts(points: list[dict[str, Any]]) -> list[dict[str, Any]]:

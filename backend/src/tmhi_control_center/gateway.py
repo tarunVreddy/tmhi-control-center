@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from copy import deepcopy
+from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any
 from urllib.parse import urlparse
@@ -209,6 +210,11 @@ class UnifiedGatewayClient:
         "/network/telemetry/?get=cell",
         "/network/telemetry?get=cell",
     )
+    SIM_PATHS = (
+        "/network/telemetry/?get=sim",
+        "/network/telemetry?get=sim",
+    )
+    VERSION_PATH = "/version"
     WIFI_CONFIG_PATHS = (
         "/network/configuration/v2?get=ap",
         "/network/configuration?get=ap",
@@ -417,6 +423,102 @@ class UnifiedGatewayClient:
         raise GatewayUnavailableError(
             _summarize_errors(errors, "Signal API was not reachable")
         )
+
+    async def device_details(self) -> dict[str, Any]:
+        """Hardware, SIM, and clock details for the device card.
+
+        SIM and device identifiers are reduced to their last four characters
+        here, before they leave this client: enough to match a SIM against the
+        carrier's records, not enough to be useful to anyone else.
+        """
+        detection, payload = await self._fetch_unified_info()
+        if payload is None:
+            raise GatewayUnavailableError(detection.error or "Gateway is not reachable")
+        device = _mapping_child(payload, ("device",))
+        time_root = _mapping_child(payload, ("time",))
+        generic = _mapping_child(_mapping_child(payload, ("signal",)), ("generic",))
+
+        sim: dict[str, Any] = {}
+        try:
+            token = await self.authenticate()
+            _source, sim_payload = await self._fetch_authenticated_json(
+                token, self.SIM_PATHS, label="SIM telemetry"
+            )
+            sim_root = _mapping_child(sim_payload, ("sim",)) or sim_payload
+            status = _bool_or_none(_find_mapping_value(sim_root, ("status",), exact=True))
+            sim = {
+                "status": None if status is None else ("Active" if status else "Inactive"),
+                "iccid": _mask_identifier(
+                    _find_mapping_value(sim_root, ("iccid",), exact=True)
+                ),
+                "imei": _mask_identifier(
+                    _find_mapping_value(sim_root, ("imei",), exact=True)
+                ),
+                "imsi": _mask_identifier(
+                    _find_mapping_value(sim_root, ("imsi",), exact=True)
+                ),
+                "phone_number": _mask_identifier(
+                    _find_mapping_value(sim_root, ("msisdn",), exact=True)
+                ),
+            }
+        except GatewayError as exc:
+            sim = {"error": str(exc)}
+
+        api_version = None
+        try:
+            response = await self._client.get(
+                _endpoint_url(self._active_tmi_base_url, self.VERSION_PATH)
+            )
+            if response.is_success:
+                api_version = _format_optional(response.json().get("version"))
+        except (httpx.HTTPError, OSError, ValueError, AttributeError) as exc:
+            logger.debug("Gateway API version is unavailable: %s", exc)
+
+        local_time = _number_or_none(
+            _find_mapping_value(time_root, ("localtime", "local_time"), exact=True)
+        )
+        now = utc_now()
+        clock = {
+            "gateway_time": datetime.fromtimestamp(local_time, timezone.utc).isoformat()
+            if local_time
+            else None,
+            "drift_seconds": round(local_time - now.timestamp()) if local_time else None,
+            "timezone": _format_optional(
+                _find_mapping_value(
+                    time_root, ("localtimezone", "local_time_zone", "timezone"), exact=True
+                )
+            ),
+        }
+        return {
+            "observed_at": now.isoformat(),
+            "device": {
+                "manufacturer": _format_optional(
+                    _find_mapping_value(device, ("manufacturer",), exact=True)
+                ),
+                "model": detection.model,
+                "hardware": _format_optional(
+                    _find_mapping_value(device, ("hardwareversion",), exact=True)
+                ),
+                "firmware": _format_optional(
+                    _find_mapping_value(device, ("softwareversion",), exact=True)
+                ),
+                "serial": _mask_identifier(
+                    _find_mapping_value(device, ("serial", "serialnumber"), exact=True)
+                ),
+                "api_version": api_version,
+            },
+            "sim": sim,
+            "network": {
+                "apn": _format_optional(_find_mapping_value(generic, ("apn",), exact=True)),
+                "registration": _format_optional(
+                    _find_mapping_value(generic, ("registration",), exact=True)
+                ),
+                "ipv6": _bool_or_none(
+                    _find_mapping_value(generic, ("hasipv6", "has_ipv6"), exact=True)
+                ),
+            },
+            "clock": clock,
+        }
 
     async def wifi_config(self) -> dict[str, Any]:
         token = await self.authenticate()
@@ -870,6 +972,9 @@ def _build_unified_overview(
         radio["key"]: radio.get("score") for radio in radios if radio.get("score") is not None
     }
     _enrich_connection_from_radios(connection, radios)
+    architecture = _radio_architecture(radios)
+    if architecture:
+        connection["architecture"] = architecture
     system = _system_summary(redacted_payload, safe_cell_payload)
 
     sections_payload = dict(redacted_payload)
@@ -912,10 +1017,14 @@ def _build_signal_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
         signal["score"] = round(sum(scores) / len(scores))
         signal["quality"] = _quality_from_score(signal["score"])
 
+    generic = _mapping_child(_mapping_child(safe, ("signal",)), ("generic",))
     return {
         "observed_at": utc_now().isoformat(),
         "signal": signal,
         "radios": radios,
+        "registration": _format_optional(
+            _find_mapping_value(generic, ("registration",), exact=True)
+        ),
     }
 
 
@@ -1057,7 +1166,46 @@ def _radio_summaries(
                 "cell": cell,
             }
         )
+    _mark_anchor_reported_nr(radios)
     return radios
+
+
+def _mark_anchor_reported_nr(radios: list[dict[str, Any]]) -> None:
+    """Flag 5G identity fields that are really the LTE anchor's.
+
+    In non-standalone mode these gateways fill the 5G block's gNBID and cell ID
+    with the LTE anchor's eNBID and cell ID. Shown as-is they imply a separate
+    5G site that does not exist.
+    """
+    by_key = {radio["key"]: radio for radio in radios}
+    lte = by_key.get("lte", {}).get("cell") or {}
+    nr = by_key.get("nr", {}).get("cell")
+    if not nr or not lte or by_key["lte"].get("active") is False:
+        return
+    same_node = nr.get("node_id") and nr.get("node_id") == lte.get("node_id")
+    same_cell = nr.get("cell_id") and nr.get("cell_id") == lte.get("cell_id")
+    if same_node and same_cell:
+        nr["anchor_reported"] = True
+        nr["node_label"] = "Anchor eNBID"
+        by_key["nr"]["note"] = (
+            "LTE + 5G (non-standalone): the gateway reports the LTE anchor's site "
+            "and cell IDs for 5G, not the 5G cell's own."
+        )
+
+
+def _radio_architecture(radios: list[dict[str, Any]]) -> str | None:
+    active = {
+        radio["key"]
+        for radio in radios
+        if radio.get("active") is not False and radio.get("cell")
+    }
+    if {"lte", "nr"} <= active:
+        return "LTE + 5G (non-standalone)"
+    if "nr" in active:
+        return "5G standalone"
+    if "lte" in active:
+        return "LTE only"
+    return None
 
 
 def _mapping_child(mapping: dict[str, Any], candidates: tuple[str, ...]) -> dict[str, Any]:
@@ -1755,6 +1903,13 @@ def _normalize_mac(value: Any) -> str | None:
     if len(compact) != 12:
         return None
     return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+
+
+def _mask_identifier(value: Any) -> str | None:
+    text = _format_optional(value)
+    if not text:
+        return None
+    return f"•••• {text[-4:]}" if len(text) > 4 else "••••"
 
 
 def _mask_mac(mac: str | None) -> str | None:

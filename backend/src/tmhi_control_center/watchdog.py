@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .config import Settings
@@ -32,6 +33,8 @@ class GatewayProtocol(Protocol):
 
 
 REBOOT_EVENT_KINDS = {"reboot_requested", "reboot_uncertain"}
+# The outage diagnosis must not hold up the watchdog cycle it is attached to.
+OUTAGE_DIAGNOSIS_TIMEOUT_SECONDS = 5.0
 
 
 class Watchdog:
@@ -41,8 +44,11 @@ class Watchdog:
         checker: ConnectivityCheckerProtocol,
         gateway: GatewayProtocol,
         store: EventStore,
+        *,
+        outage_diagnoser: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         self.settings = settings
+        self.outage_diagnoser = outage_diagnoser
         self.checker = checker
         self.gateway = gateway
         self.store = store
@@ -177,6 +183,7 @@ class Watchdog:
 
         if result.online:
             async with self._state_lock:
+                outage_started_at = self.state.failure_started_at
                 self.state.phase = "online"
                 self.state.last_online_at = now
                 self.state.failure_started_at = None
@@ -187,10 +194,15 @@ class Watchdog:
                     else self.state.post_reboot_grace_until
                 )
             if previous_online is False:
+                details: dict[str, Any] = {"successful_probes": result.successful_probes}
+                if outage_started_at is not None:
+                    details["outage_seconds"] = round(
+                        (now - outage_started_at).total_seconds()
+                    )
                 await self.store.record(
                     "internet_restored",
                     "Internet connectivity was restored",
-                    {"successful_probes": result.successful_probes},
+                    details,
                     timestamp=now,
                 )
                 logger.info("Internet connectivity restored")
@@ -218,13 +230,17 @@ class Watchdog:
             failure_started_at = self.state.failure_started_at
 
         if first_failure:
+            details = {
+                "successful_probes": result.successful_probes,
+                "required_successes": result.required_successes,
+            }
+            diagnosis = await self._diagnose_outage()
+            if diagnosis is not None:
+                details["diagnosis"] = diagnosis
             await self.store.record(
                 "internet_lost",
                 "All required internet connectivity checks failed",
-                {
-                    "successful_probes": result.successful_probes,
-                    "required_successes": result.required_successes,
-                },
+                details,
                 timestamp=now,
             )
             logger.warning("Internet connectivity checks are failing")
@@ -280,6 +296,19 @@ class Watchdog:
             return
 
         await self._perform_reboot(now, source="automatic", force=False)
+
+    async def _diagnose_outage(self) -> dict[str, Any] | None:
+        if self.outage_diagnoser is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                self.outage_diagnoser(), timeout=OUTAGE_DIAGNOSIS_TIMEOUT_SECONDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Outage diagnosis failed: %s", exc)
+            return None
 
     def _apply_gateway_detection(self, detection: GatewayDetection) -> None:
         self.state.gateway_reachable = detection.reachable

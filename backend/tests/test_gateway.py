@@ -563,3 +563,103 @@ async def test_detect_nokia_gateway_as_unsupported() -> None:
     assert detection.supported is False
     assert detection.api_type == "nokia"
     assert detection.model == "5G21"
+
+
+G5AR_ALL = {
+    "device": {
+        "hardwareVersion": "R01",
+        "macId": "18:60:41:00:00:05",
+        "manufacturer": "Arcadyan",
+        "model": "TMO-G5AR",
+        "serial": "XX00Z1E82",
+        "softwareVersion": "1.00.06",
+    },
+    "signal": {
+        "4g": {"bands": ["b2"], "cid": 12, "eNBID": 20001, "rsrp": -75, "sinr": 33},
+        "5g": {"bands": ["n41"], "cid": 12, "gNBID": 20001, "rsrp": -66, "sinr": 28},
+        "generic": {"apn": "FBB.HOME", "hasIPv6": True, "registration": "registered"},
+    },
+    "time": {"localTime": 1791303219, "localTimeZone": "-06:00", "upTime": 267336},
+}
+
+
+@pytest.mark.asyncio
+async def test_non_standalone_5g_identity_is_flagged_as_the_lte_anchor() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/gateway/"):
+            return httpx.Response(200, json=G5AR_ALL)
+        return httpx.Response(404)
+
+    client = UnifiedGatewayClient(
+        "http://192.168.12.1:8080/TMI/v1",
+        "admin",
+        "",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        overview = await client.overview()
+        signal = await client.signal_snapshot()
+    finally:
+        await client.close()
+
+    radios = {radio["key"]: radio for radio in overview["radios"]}
+    assert radios["nr"]["cell"]["anchor_reported"] is True
+    assert radios["nr"]["cell"]["node_label"] == "Anchor eNBID"
+    assert "anchor" in radios["nr"]["note"]
+    assert "anchor_reported" not in radios["lte"]["cell"]
+    assert overview["connection"]["architecture"] == "LTE + 5G (non-standalone)"
+    assert signal["registration"] == "registered"
+
+
+@pytest.mark.asyncio
+async def test_device_details_masks_sim_and_serial_identifiers() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/gateway/"):
+            return httpx.Response(200, json=G5AR_ALL)
+        if path.endswith("/auth/login"):
+            return httpx.Response(200, json={"auth": {"token": "sim-token"}})
+        if path.endswith("/network/telemetry/") and request.url.params["get"] == "sim":
+            assert request.headers["Authorization"] == "Bearer sim-token"
+            return httpx.Response(
+                200,
+                json={
+                    "sim": {
+                        "iccId": "8901260123456789012",
+                        "imei": "351234567890154",
+                        "imsi": "310260123456758",
+                        "msisdn": "13035550185",
+                        "status": True,
+                    }
+                },
+            )
+        if path.endswith("/version"):
+            return httpx.Response(200, json={"version": 3.1})
+        return httpx.Response(404)
+
+    client = UnifiedGatewayClient(
+        "http://192.168.12.1:8080/TMI/v1",
+        "admin",
+        "secret",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        details = await client.device_details()
+    finally:
+        await client.close()
+
+    assert details["device"]["firmware"] == "1.00.06"
+    assert details["device"]["serial"] == "•••• 1E82"
+    assert details["device"]["api_version"] == "3.1"
+    assert details["sim"] == {
+        "status": "Active",
+        "iccid": "•••• 9012",
+        "imei": "•••• 0154",
+        "imsi": "•••• 6758",
+        "phone_number": "•••• 0185",
+    }
+    serialized = str(details)
+    for secret in ("8901260123456789012", "351234567890154", "13035550185", "XX00Z1E82"):
+        assert secret not in serialized
+    assert details["network"] == {"apn": "FBB.HOME", "registration": "registered", "ipv6": True}
+    assert details["clock"]["timezone"] == "-06:00"
