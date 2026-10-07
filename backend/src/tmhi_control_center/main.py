@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -20,6 +21,14 @@ from .advanced_modem import (
     G4AR_LAB_MODES,
     g4ar_firmware_lab_status,
     validate_flash_consent,
+)
+from .auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE_SECONDS,
+    LoginThrottle,
+    RequireSession,
+    SessionSigner,
+    client_address,
 )
 from .config import Settings
 from .connection import (
@@ -78,6 +87,12 @@ gateway = UnifiedGatewayClient(
     settings.gateway_timeout_seconds,
     settings.gateway_user_agent,
 )
+session_signer = (
+    SessionSigner(settings.session_key_path, lambda: settings.gateway_password)
+    if settings.dashboard_auth_enabled
+    else None
+)
+login_throttle = LoginThrottle()
 
 
 async def _diagnose_outage() -> dict[str, Any]:
@@ -135,6 +150,19 @@ STATIC_DIR = Path(__file__).parent / "static"
 FINGERPRINTED_ASSETS = ("app.js", "styles.css")
 
 
+def _fingerprint_assets(html: str) -> tuple[str, list[str]]:
+    fingerprints = []
+    for name in FINGERPRINTED_ASSETS:
+        fingerprint = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        fingerprints.append(fingerprint)
+        html = re.sub(
+            rf"(/static/{re.escape(name)})\?v=[^\"']*",
+            rf"\g<1>?v={fingerprint}",
+            html,
+        )
+    return html, fingerprints
+
+
 def _render_dashboard() -> tuple[str, str]:
     """The dashboard page with its script and stylesheet tagged by content.
 
@@ -143,16 +171,11 @@ def _render_dashboard() -> tuple[str, str]:
     script. The build ID covers all three files and is stamped into the page,
     which compares it with /api/version to notice a newer deploy while open.
     """
-    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    digest = hashlib.sha256(html.encode("utf-8"))
-    for name in FINGERPRINTED_ASSETS:
-        fingerprint = hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+    source = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    html, fingerprints = _fingerprint_assets(source)
+    digest = hashlib.sha256(source.encode("utf-8"))
+    for fingerprint in fingerprints:
         digest.update(fingerprint.encode("ascii"))
-        html = re.sub(
-            rf"(/static/{re.escape(name)})\?v=[^\"']*",
-            rf"\g<1>?v={fingerprint}",
-            html,
-        )
     build = digest.hexdigest()[:12]
     html = html.replace(
         '<meta name="tmhi-build" content="dev" />',
@@ -162,6 +185,7 @@ def _render_dashboard() -> tuple[str, str]:
 
 
 DASHBOARD_HTML, BUILD_ID = _render_dashboard()
+LOGIN_HTML, _ = _fingerprint_assets((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
 
 
 @asynccontextmanager
@@ -226,6 +250,12 @@ if settings.cors_origins:
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type"],
     )
+
+app.add_middleware(RequireSession, signer_provider=lambda: session_signer)
+
+
+class DashboardLoginRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=512, repr=False)
 
 
 class RebootRequest(BaseModel):
@@ -368,12 +398,134 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/", include_in_schema=False)
 async def dashboard(request: Request) -> Response:
+    remaining = (
+        session_signer.remaining_seconds(request.cookies.get(SESSION_COOKIE))
+        if session_signer
+        else SESSION_MAX_AGE_SECONDS
+    )
+    if remaining <= 0:
+        return HTMLResponse(
+            LOGIN_HTML,
+            headers={"Cache-Control": "no-store", "Vary": "Cookie"},
+        )
     # no-cache makes the browser ask every time instead of guessing a reuse
     # period from Last-Modified; the ETag keeps an unchanged answer to a 304.
-    headers = {"Cache-Control": "no-cache", "ETag": f'"{BUILD_ID}"'}
+    headers = {"Cache-Control": "no-cache", "ETag": f'"{BUILD_ID}"', "Vary": "Cookie"}
     if request.headers.get("if-none-match") == headers["ETag"]:
-        return Response(status_code=304, headers=headers)
-    return HTMLResponse(DASHBOARD_HTML, headers=headers)
+        response: Response = Response(status_code=304, headers=headers)
+    else:
+        response = HTMLResponse(DASHBOARD_HTML, headers=headers)
+    # Opening the app at least every couple of weeks keeps it signed in.
+    if remaining < SESSION_MAX_AGE_SECONDS / 2:
+        _set_session_cookie(request, response)
+    return response
+
+
+def _set_session_cookie(request: Request, response: Response) -> None:
+    if session_signer is None:
+        return
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_signer.issue(),
+        max_age=SESSION_MAX_AGE_SECONDS,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https",
+    )
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: DashboardLoginRequest, request: Request) -> JSONResponse:
+    client = client_address(
+        request.client.host if request.client else None,
+        request.headers.get("x-forwarded-for"),
+    )
+    retry_after = login_throttle.client_retry_after(client)
+    if retry_after:
+        raise _too_many_attempts(retry_after)
+
+    configured = settings.gateway_password
+    matches_configured = bool(configured) and hmac.compare_digest(
+        body.password.encode("utf-8"),
+        configured.encode("utf-8"),
+    )
+    if not matches_configured:
+        # The gateway is the authority: with no password saved yet, or after it
+        # was changed on the gateway, a password the gateway accepts is right.
+        retry_after = login_throttle.gateway_retry_after()
+        if retry_after:
+            login_throttle.record_failure(client)
+            raise _too_many_attempts(retry_after)
+        login_throttle.record_gateway_check()
+        accepted = await _gateway_accepts(body.password, password_configured=bool(configured))
+        if not accepted:
+            login_throttle.record_failure(client)
+            await store.record(
+                "dashboard_login_failed",
+                "Dashboard sign-in failed",
+                {"client": client},
+            )
+            raise HTTPException(status_code=401, detail="Incorrect password")
+        # Replace a stale password where it was kept. With none configured, it
+        # stays in memory so signing in does not undo a deliberate Forget.
+        await _apply_gateway_password(
+            body.password,
+            remember=settings.gateway_password_source == "saved",
+        )
+
+    login_throttle.clear(client)
+    await store.record("dashboard_login", "Dashboard signed in", {"client": client})
+    response = JSONResponse({"authenticated": True}, headers={"Cache-Control": "no-store"})
+    _set_session_cookie(request, response)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout() -> JSONResponse:
+    response = JSONResponse({"authenticated": False}, headers={"Cache-Control": "no-store"})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+
+def _too_many_attempts(retry_after: int) -> HTTPException:
+    minutes = max(1, round(retry_after / 60))
+    return HTTPException(
+        status_code=429,
+        detail=f"Too many sign-in attempts. Try again in about {minutes} min.",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+async def _gateway_accepts(password: str, *, password_configured: bool) -> bool:
+    candidate = UnifiedGatewayClient(
+        settings.gateway_base_url,
+        settings.gateway_username,
+        password,
+        settings.gateway_timeout_seconds,
+        settings.gateway_user_agent,
+    )
+    try:
+        if not await candidate.is_reachable():
+            if password_configured:
+                return False
+            raise HTTPException(
+                status_code=503,
+                detail="The gateway could not be reached to check this password",
+            )
+        await candidate.authenticate()
+        return True
+    except GatewayAuthenticationError:
+        return False
+    except GatewayError as exc:
+        if password_configured:
+            return False
+        raise HTTPException(
+            status_code=502,
+            detail=f"The gateway could not check this password: {exc}",
+        ) from exc
+    finally:
+        await candidate.close()
 
 
 @app.get("/api/version")
@@ -1165,8 +1317,11 @@ async def gateway_test(request: GatewayTestRequest | None = None) -> dict[str, A
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/api/gateway/login")
-async def gateway_login(request: GatewayLoginRequest) -> dict[str, Any]:
+@app.post("/api/gateway/login", response_model=None)
+async def gateway_login(
+    request: GatewayLoginRequest,
+    http_request: Request,
+) -> JSONResponse | dict[str, Any]:
     test_gateway = UnifiedGatewayClient(
         settings.gateway_base_url,
         settings.gateway_username,
@@ -1190,9 +1345,28 @@ async def gateway_login(request: GatewayLoginRequest) -> dict[str, Any]:
     finally:
         await test_gateway.close()
 
-    if request.remember:
+    password_source = await _apply_gateway_password(
+        request.gateway_password,
+        remember=request.remember,
+    )
+    response = JSONResponse(
+        {
+            "reachable": True,
+            "authenticated": True,
+            "saved": request.remember,
+            "gateway_password_configured": True,
+            "gateway_password_source": password_source,
+        }
+    )
+    # A new password invalidates every session, including this one.
+    _set_session_cookie(http_request, response)
+    return response
+
+
+async def _apply_gateway_password(password: str, *, remember: bool) -> str:
+    if remember:
         try:
-            managed_env.set_value("GATEWAY_PASSWORD", request.gateway_password)
+            managed_env.set_value("GATEWAY_PASSWORD", password)
         except OSError as exc:
             raise HTTPException(
                 status_code=500,
@@ -1202,25 +1376,19 @@ async def gateway_login(request: GatewayLoginRequest) -> dict[str, Any]:
     else:
         password_source = "runtime"
 
-    settings.gateway_password = request.gateway_password
+    settings.gateway_password = password
     settings.gateway_password_source = password_source
-    gateway.set_password(request.gateway_password)
+    gateway.set_password(password)
     await store.record(
-        "gateway_login_saved" if request.remember else "gateway_login_authenticated",
+        "gateway_login_saved" if remember else "gateway_login_authenticated",
         (
             "Gateway login saved from dashboard"
-            if request.remember
+            if remember
             else "Gateway login authenticated from dashboard"
         ),
-        {"username": settings.gateway_username, "remember": request.remember},
+        {"username": settings.gateway_username, "remember": remember},
     )
-    return {
-        "reachable": True,
-        "authenticated": True,
-        "saved": request.remember,
-        "gateway_password_configured": True,
-        "gateway_password_source": password_source,
-    }
+    return password_source
 
 
 @app.delete("/api/gateway/login")

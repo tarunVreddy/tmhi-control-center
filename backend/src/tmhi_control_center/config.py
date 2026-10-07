@@ -122,6 +122,8 @@ class Settings:
     minimum_successful_probes: int = 2
 
     database_path: str = "/data/control-center.db"
+    session_key_path: str = field(default="/data/session.key", repr=False)
+    dashboard_auth_enabled: bool = True
     cors_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
 
@@ -332,6 +334,8 @@ class Settings:
                 1,
             ),
             database_path=database_path,
+            session_key_path=str(Path(database_path).with_name("session.key")),
+            dashboard_auth_enabled=_bool(managed_values, "DASHBOARD_AUTH_ENABLED", True),
             cors_origins=cors_origins,
             log_level=_env(managed_values, "LOG_LEVEL", "INFO").upper(),
         )
@@ -459,6 +463,7 @@ class Settings:
             },
             "watchdog_enabled": self.watchdog_enabled,
             "dry_run": self.dry_run,
+            "dashboard_auth_enabled": self.dashboard_auth_enabled,
             "check_interval_seconds": self.check_interval_seconds,
             "tests_per_hour": round(3600 / self.check_interval_seconds),
             "failure_threshold_seconds": self.failure_threshold_seconds,

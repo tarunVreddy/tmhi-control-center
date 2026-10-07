@@ -18,6 +18,8 @@ def load_main(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCELLID_API_KEY", raising=False)
     monkeypatch.delenv("OPENCELLID_API_KEY_FILE", raising=False)
     monkeypatch.setenv("PUBLIC_IP_LOCATION_ENABLED", "false")
+    # Sign-in has its own tests in test_auth.py.
+    monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "false")
     sys.modules.pop("tmhi_control_center.main", None)
     return importlib.import_module("tmhi_control_center.main")
 

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#111722" />
+    <title>Sign In · TMHI Control Center</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+    <link rel="manifest" href="/static/site.webmanifest" />
+    <link rel="stylesheet" href="/static/styles.css?v=dev" />
+    <script>
+      // Match the dashboard's theme before first paint.
+      (() => {
+        let theme = null;
+        try {
+          theme = window.localStorage.getItem("tmhi-control-center-theme");
+        } catch {}
+        if (!theme) {
+          theme = window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.dataset.theme = theme === "dark" ? "dark" : "light";
+      })();
+    </script>
+  </head>
+  <body class="signin-page">
+    <main class="signin">
+      <form id="signinForm" class="signin-card" novalidate>
+        <div class="signin-brand">
+          <img class="brand-mark" src="/static/icon-192.png" alt="" aria-hidden="true" />
+          <div>
+            <p class="eyebrow">TMHI</p>
+            <h1>Control Center</h1>
+          </div>
+        </div>
+        <label class="field">
+          <span>Gateway admin password</span>
+          <input
+            id="signinPassword"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            autofocus
+          />
+          <small>The same password you use for the gateway's admin page.</small>
+        </label>
+        <p id="signinMessage" class="signin-message" role="alert" hidden></p>
+        <button id="signinButton" class="button button--primary" type="submit">Sign In</button>
+      </form>
+    </main>
+    <script>
+      const form = document.getElementById("signinForm");
+      const input = document.getElementById("signinPassword");
+      const button = document.getElementById("signinButton");
+      const message = document.getElementById("signinMessage");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!input.value) {
+          input.focus();
+          return;
+        }
+        button.disabled = true;
+        button.textContent = "Signing In…";
+        message.hidden = true;
+        try {
+          const response = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: input.value }),
+          });
+          if (response.ok) {
+            window.location.replace("/");
+            return;
+          }
+          let detail = `Sign-in failed (${response.status})`;
+          try {
+            detail = (await response.json()).detail || detail;
+          } catch {}
+          message.textContent = detail;
+          message.hidden = false;
+          input.select();
+        } catch {
+          message.textContent = "Could not reach the Control Center. Check your connection and try again.";
+          message.hidden = false;
+        }
+        button.disabled = false;
+        button.textContent = "Sign In";
+      });
+    </script>
+  </body>
+</html>

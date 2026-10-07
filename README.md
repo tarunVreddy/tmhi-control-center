@@ -129,7 +129,9 @@ another service already uses that port.
 
 ## First-Time Setup
 
-1. Open `http://localhost:8095/`.
+1. Open `http://localhost:8095/` and sign in with the gateway admin password.
+   The app checks it against the gateway, so this works before anything is
+   saved; see [Dashboard Sign-In](#dashboard-sign-in).
 2. Go to `Settings`.
 3. Save the gateway admin password.
 4. Click `Test` to confirm the app can reach the gateway.
@@ -148,6 +150,23 @@ Gateway host: 192.168.12.1
 Gateway API port: 8080
 Username: admin
 ```
+
+## Dashboard Sign-In
+
+The dashboard and its API require signing in with the gateway admin password,
+since anyone who can reach them can reboot the gateway or change Wi-Fi settings.
+
+- The password is checked against the saved one, or against the gateway itself
+  when none is saved or it was changed on the gateway.
+- A sign-in lasts 30 days and renews while the app is in use. Changing or
+  forgetting the gateway password signs every browser out.
+- Failed attempts are rate limited per client, and checks that reach the
+  gateway are capped overall so guessing cannot trip the gateway's lockout.
+- The app serves plain HTTP. Put it behind a TLS reverse proxy before exposing
+  it beyond your LAN; the session cookie becomes `Secure` when the proxy sends
+  `X-Forwarded-Proto: https`.
+- `DASHBOARD_AUTH_ENABLED=false` turns sign-in off for setups where nothing
+  untrusted can reach the dashboard port.
 
 Some models expose the API differently. The app tries common same-host gateway
 API variants when possible.
