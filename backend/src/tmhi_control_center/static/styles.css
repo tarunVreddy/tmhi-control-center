@@ -3079,12 +3079,6 @@ th {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .speed-history-section .section-actions .button {
-    min-height: 42px;
-    width: 100%;
-    flex: 0 0 auto;
-  }
-
   .sidebar {
     gap: 10px;
     padding: 10px;
@@ -3142,7 +3136,14 @@ th {
     width: 100%;
   }
 
+  /* Headings and their actions stack vertically here. The 760px rule that
+     lets buttons share a row (flex: 1 1 130px) would then size each button's
+     height to 130px rather than its width, so reset it for stacked buttons. */
+  .section-heading > .button,
+  .view-heading > .button,
   .section-actions .button {
+    flex: 0 0 auto;
     width: 100%;
+    min-height: 42px;
   }
 }
