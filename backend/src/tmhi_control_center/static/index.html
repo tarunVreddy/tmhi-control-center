@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
     <link rel="manifest" href="/static/site.webmanifest" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260902-deploy-4" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261006-deploy-7" />
   </head>
   <body>
     <div class="app-shell">
@@ -208,7 +208,7 @@
                   </div>
                 </div>
               </div>
-              <div id="telemetryTrendGrid" class="trend-grid trend-grid--two">
+              <div id="telemetryTrendGrid" class="trend-grid">
                 <article class="chart-panel">
                   <div class="chart-heading">
                     <div>
@@ -228,6 +228,16 @@
                     <small>dB</small>
                   </div>
                   <div id="sinrTrendChart" class="telemetry-chart"></div>
+                </article>
+                <article class="chart-panel">
+                  <div class="chart-heading">
+                    <div>
+                      <span>Channel Quality</span>
+                      <strong>CQI</strong>
+                    </div>
+                    <small>0-15</small>
+                  </div>
+                  <div id="cqiTrendChart" class="telemetry-chart"></div>
                 </article>
                 <article id="temperatureTrendPanel" class="chart-panel" hidden>
                   <div class="chart-heading">
@@ -296,6 +306,72 @@
                   </div>
                   <div id="speedTestTrendChart" class="telemetry-chart"></div>
                   <div id="speedTestDayparts" class="daypart-grid"></div>
+                  <div id="speedTestConnections" class="daypart-grid speed-connection-grid" hidden></div>
+                </article>
+              </div>
+            </section>
+
+            <section class="trends-section speed-history-section stability-section" aria-labelledby="stabilityHeading">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Connection History</p>
+                  <h2 id="stabilityHeading">Connection Stability</h2>
+                  <small id="stabilityCurrentLabel" class="muted">Waiting for gateway data</small>
+                </div>
+                <div class="section-actions">
+                  <span id="stabilityTag" class="tag tag--muted">Loading</span>
+                  <div class="segmented-control" aria-label="Connection history range">
+                    <button class="segment-button" type="button" data-stability-days="7">7d</button>
+                    <button class="segment-button is-active" type="button" data-stability-days="14">14d</button>
+                    <button class="segment-button" type="button" data-stability-days="30">30d</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="speed-summary-grid stability-summary-grid">
+                <article class="speed-summary-item">
+                  <span>Internet Outages</span>
+                  <strong id="outageCount">--</strong>
+                  <small id="outageCountDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Typical Outage</span>
+                  <strong id="outageMedian">--</strong>
+                  <small id="outageMedianDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Gateway Restarts</span>
+                  <strong id="restartCount">--</strong>
+                  <small id="restartDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Connection Changes</span>
+                  <strong id="connectionChangeCount">--</strong>
+                  <small id="connectionChangeDetail">Loading</small>
+                </article>
+              </div>
+
+              <div class="stability-grid">
+                <article class="chart-panel">
+                  <div class="chart-heading">
+                    <div>
+                      <span>When Outages Start</span>
+                      <strong>By Hour of Day</strong>
+                    </div>
+                    <small id="outageHourZone">Gateway time</small>
+                  </div>
+                  <div id="outageHourChart" class="hour-chart"></div>
+                  <div id="outageBreakdown" class="daypart-grid outage-breakdown"></div>
+                  <p id="outageDiagnosis" class="privacy-note"></p>
+                </article>
+                <article class="chart-panel">
+                  <div class="chart-heading">
+                    <div>
+                      <span>Handovers, Restarts, Firmware</span>
+                      <strong>Recent Changes</strong>
+                    </div>
+                  </div>
+                  <div id="connectionChangeList" class="event-list change-list"></div>
                 </article>
               </div>
             </section>
@@ -1242,6 +1318,6 @@
     </div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
-    <script src="/static/app.js?v=20260908-deploy-6" defer></script>
+    <script src="/static/app.js?v=20261006-deploy-7" defer></script>
   </body>
 </html>

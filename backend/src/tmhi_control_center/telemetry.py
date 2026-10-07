@@ -4,9 +4,12 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from .storage import EventStore
+from .storage import EventStore, compact_telemetry_snapshot
+
+if TYPE_CHECKING:
+    from .connection import ConnectionChangeTracker
 
 
 logger = logging.getLogger(__name__)
@@ -20,9 +23,11 @@ class GatewayTelemetryCollector:
         *,
         interval_seconds: float = 60,
         enabled: bool = True,
+        change_tracker: ConnectionChangeTracker | None = None,
     ) -> None:
         self.overview_provider = overview_provider
         self.store = store
+        self.change_tracker = change_tracker
         self.interval_seconds = max(0.01, float(interval_seconds))
         self.enabled = enabled
         self._collect_lock = asyncio.Lock()
@@ -58,7 +63,31 @@ class GatewayTelemetryCollector:
             self._latest = overview
             self._last_collected_at = datetime.now(timezone.utc)
             self._last_error = None
+            await self._track_changes(overview)
             return overview
+
+    @property
+    def latest(self) -> dict[str, Any] | None:
+        return self._latest
+
+    async def _track_changes(self, overview: dict[str, Any]) -> None:
+        if self.change_tracker is None:
+            return
+        snapshot = compact_telemetry_snapshot(overview)
+        if snapshot is None:
+            return
+        try:
+            observed_at = datetime.fromisoformat(
+                str(overview.get("observed_at")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            observed_at = self._last_collected_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        try:
+            await self.change_tracker.observe(observed_at, snapshot)
+        except Exception as exc:  # change logging must never stop collection
+            logger.warning("Connection change tracking failed: %s", exc)
 
     async def run(self) -> None:
         if not self.enabled:

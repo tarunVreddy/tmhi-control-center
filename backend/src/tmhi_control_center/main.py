@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,6 +20,16 @@ from .advanced_modem import (
     validate_flash_consent,
 )
 from .config import Settings
+from .connection import (
+    CONNECTION_EVENT_KINDS,
+    OUTAGE_EVENT_KINDS,
+    ConnectionChangeTracker,
+    connection_context,
+    connection_state,
+    diagnose_outage,
+    outage_summary,
+    parse_utc_offset,
+)
 from .connectivity import ConnectivityChecker
 from .credentials import ManagedEnvFile
 from .firmware_backup import (
@@ -32,7 +43,7 @@ from .geolocation import PublicIpLocationError, PublicIpLocator
 from .g4ar_root import assess_g4ar_root_readiness, g4ar_root_research_status
 from .insights import build_homelab_insights
 from .speedtest import SpeedTestBusyError, SpeedTestError, SpeedTestManager
-from .storage import EventStore
+from .storage import EventStore, compact_telemetry_snapshot
 from .telemetry import GatewayTelemetryCollector
 from .towers import build_tower_map_payload
 from .usb_lab import UsbProbeError, g4ar_usb_status, probe_g4ar_usb
@@ -64,9 +75,44 @@ gateway = UnifiedGatewayClient(
     settings.gateway_timeout_seconds,
     settings.gateway_user_agent,
 )
-watchdog = Watchdog(settings, checker, gateway, store)
+
+
+async def _diagnose_outage() -> dict[str, Any]:
+    # The signal endpoint needs no login, so this adds no authentication to a
+    # gateway that may already be struggling.
+    try:
+        snapshot = await gateway.signal_snapshot()
+    except Exception as exc:
+        return diagnose_outage(None, str(exc))
+    return diagnose_outage(snapshot)
+
+
+async def _speed_test_context() -> dict[str, Any] | None:
+    overview = await telemetry_collector.collect_once(max_age_seconds=120)
+    return connection_context(compact_telemetry_snapshot(overview))
+
+
+def _gateway_timezone_offset() -> int | None:
+    overview = telemetry_collector.latest or {}
+    system = overview.get("system") if isinstance(overview.get("system"), dict) else {}
+    return parse_utc_offset(system.get("timezone"))
+
+
+watchdog = Watchdog(
+    settings,
+    checker,
+    gateway,
+    store,
+    outage_diagnoser=_diagnose_outage,
+)
 watchdog_task: asyncio.Task[None] | None = None
-speed_test_manager = SpeedTestManager(settings, store)
+speed_test_manager = SpeedTestManager(
+    settings,
+    store,
+    context_provider=_speed_test_context,
+    timezone_provider=_gateway_timezone_offset,
+)
+change_tracker = ConnectionChangeTracker(store)
 speed_test_task: asyncio.Task[None] | None = None
 
 
@@ -79,6 +125,7 @@ telemetry_collector = GatewayTelemetryCollector(
     store,
     interval_seconds=settings.telemetry_sample_interval_seconds,
     enabled=settings.telemetry_collection_enabled,
+    change_tracker=change_tracker,
 )
 telemetry_task: asyncio.Task[None] | None = None
 STATIC_DIR = Path(__file__).parent / "static"
@@ -88,6 +135,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 async def lifespan(_: FastAPI):
     global watchdog_task, speed_test_task, telemetry_task
     await store.initialize()
+    try:
+        await change_tracker.initialize()
+    except Exception:
+        # History backfill is a convenience; never let it stop the watchdog.
+        logger.exception("Connection history backfill failed")
     await speed_test_manager.initialize()
     watchdog_task = asyncio.create_task(watchdog.run(), name="tmhi-control-center")
     speed_test_task = asyncio.create_task(
@@ -386,6 +438,49 @@ async def gateway_telemetry_history(
     history = await store.telemetry_history(hours=hours, limit=limit)
     history["collector"] = telemetry_collector.status()
     return history
+
+
+@app.get("/api/connection/history")
+async def connection_history(
+    days: int = Query(default=14, ge=1, le=90),
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+    changes = await store.events_since(CONNECTION_EVENT_KINDS, since)
+    # Start a little earlier so an outage already under way at the window's
+    # edge is paired with the event that began it.
+    outage_events = await store.events_since(OUTAGE_EVENT_KINDS, since - timedelta(hours=1))
+    outages = outage_summary(
+        outage_events,
+        now=now,
+        since=since,
+        days=days,
+        timezone_offset_minutes=speed_test_manager.timezone_offset_minutes(),
+        check_interval_seconds=settings.check_interval_seconds,
+    )
+    restarts = [event for event in changes if event["kind"] == "gateway_restarted"]
+    latest = telemetry_collector.latest
+    return {
+        "range_days": days,
+        "current": connection_state(compact_telemetry_snapshot(latest))
+        if latest
+        else None,
+        "changes": list(reversed(changes))[:100],
+        "change_count": sum(1 for event in changes if event["kind"] == "connection_changed"),
+        "restart_count": len(restarts),
+        "unrequested_restart_count": sum(
+            1 for event in restarts if not event["details"].get("requested_by_app")
+        ),
+        "outages": outages,
+    }
+
+
+@app.get("/api/gateway/details")
+async def gateway_details() -> dict[str, Any]:
+    try:
+        return await gateway.device_details()
+    except GatewayError as exc:
+        raise _gateway_exception(exc) from exc
 
 
 @app.get("/api/speedtest/status")

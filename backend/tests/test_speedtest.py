@@ -159,3 +159,58 @@ def test_transfer_chunks_preserve_requested_volume() -> None:
     assert sum(chunks) == 1_000_000_000
     assert len(chunks) == 1_000_000_000 // MAX_TRANSFER_REQUEST_BYTES
     assert max(chunks) == MAX_TRANSFER_REQUEST_BYTES
+
+
+@pytest.mark.asyncio
+async def test_manager_records_radio_context_and_prefers_gateway_timezone(tmp_path) -> None:
+    from types import SimpleNamespace
+
+    from tmhi_control_center.speedtest import SpeedTestManager
+    from tmhi_control_center.storage import EventStore
+
+    store = EventStore(str(tmp_path / "speed.db"))
+    await store.initialize()
+    settings = SimpleNamespace(
+        speedtest_profile="gentle",
+        speedtest_cadence="disabled",
+        speedtest_timezone_offset_minutes=-360,
+        speedtest_retention_days=730,
+    )
+    gateway_offset: list[int | None] = [-420]
+
+    async def context() -> dict:
+        return {"mode": "5g_sa", "label": "5G standalone", "bands": "n41"}
+
+    manager = SpeedTestManager(
+        settings,
+        store,
+        context_provider=context,
+        timezone_provider=lambda: gateway_offset[0],
+    )
+
+    async def fake_run(profile: str) -> dict:
+        return {
+            "observed_at": "2026-10-06T08:00:00+00:00",
+            "profile": profile,
+            "provider": "cloudflare",
+            "success": True,
+            "download_mbps": 800.0,
+            "upload_mbps": 100.0,
+        }
+
+    manager.runner.run = fake_run
+    result = await manager.run(trigger="manual")
+    await manager.stop()
+
+    assert result["context"]["mode"] == "5g_sa"
+    latest = await store.latest_speed_test()
+    assert latest["context"]["label"] == "5G standalone"
+    # 08:00 UTC is 01:00 at the gateway's -07:00, which is night, where the
+    # saved -06:00 would have put it at 02:00.
+    assert latest["daypart"] == "night"
+    status = await manager.status()
+    assert (status["timezone_offset_minutes"], status["timezone_source"]) == (-420, "gateway")
+
+    gateway_offset[0] = None
+    status = await manager.status()
+    assert (status["timezone_offset_minutes"], status["timezone_source"]) == (-360, "settings")

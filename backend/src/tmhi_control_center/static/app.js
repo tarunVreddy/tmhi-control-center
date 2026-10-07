@@ -62,6 +62,9 @@ const state = {
   mapData: null,
   telemetryHistory: null,
   telemetryHours: 6,
+  connectionHistory: null,
+  connectionDays: 14,
+  gatewayDetails: null,
   speedTestStatus: null,
   speedTestHistory: null,
   speedTestDays: 1,
@@ -112,8 +115,12 @@ const ids = [
   "clientCountTag",
   "clientTableBody",
   "connectedDetail",
+  "connectionChangeCount",
+  "connectionChangeDetail",
+  "connectionChangeList",
   "connectedMetric",
   "connectionDetails",
+  "cqiTrendChart",
   "darkModeToggle",
   "dashboardMapPreview",
   "dashboardNextAction",
@@ -171,6 +178,14 @@ const ids = [
   "nearbyTowerCountTag",
   "nearbyTowerTableBody",
   "openCellIdKey",
+  "outageBreakdown",
+  "outageCount",
+  "outageCountDetail",
+  "outageDiagnosis",
+  "outageHourChart",
+  "outageHourZone",
+  "outageMedian",
+  "outageMedianDetail",
   "probeDetail",
   "probeMetric",
   "probeTableBody",
@@ -181,6 +196,8 @@ const ids = [
   "rebootMetric",
   "refreshButton",
   "refreshClientsButton",
+  "restartCount",
+  "restartDetail",
   "rememberPassword",
   "saveAdvancedModemButton",
   "saveGatewayButton",
@@ -203,7 +220,10 @@ const ids = [
   "signalSummary",
   "sinrTrendChart",
   "skipStockBackupReminder",
+  "stabilityCurrentLabel",
+  "stabilityTag",
   "speedTestCadence",
+  "speedTestConnections",
   "speedTestDataDetail",
   "speedTestDataUsed",
   "speedTestDayparts",
@@ -270,7 +290,9 @@ const els = {};
 
 const detailLabels = {
   api: "API",
+  api_version: "API version",
   apn: "APN",
+  architecture: "5G type",
   band: "Band",
   broadcast_enabled: "SSID broadcast",
   controller: "USB controller",
@@ -284,7 +306,12 @@ const detailLabels = {
   cell_scan: "Cell scan",
   custom_firmware_flash: "Custom flash",
   firmware: "Firmware",
+  gateway_clock: "Gateway clock",
   hardware: "Hardware",
+  iccid: "ICCID",
+  imei: "IMEI",
+  imsi: "IMSI",
+  ipv6: "IPv6",
   ethernet_target: "Ethernet target",
   lac: "TAC/LAC",
   manufacturer: "Manufacturer",
@@ -296,6 +323,7 @@ const detailLabels = {
   mode: "Radio mode",
   operator: "Operator",
   pci: "PCI",
+  phone_number: "Phone number",
   plmn: "PLMN",
   preferred_chipset: "Preferred chipset",
   preferred_driver: "Preferred driver",
@@ -306,6 +334,8 @@ const detailLabels = {
   root_access: "Root access",
   registration: "Registration",
   roaming: "Roaming",
+  serial: "Serial",
+  sim_status: "SIM",
   lte_anchor_override: "LTE anchor / NSA",
   stock_firmware_backup: "Recovery bundle",
   stock_backup_skipped: "Backup reminder",
@@ -438,6 +468,14 @@ function bindControls() {
       }
     });
   });
+  document.querySelectorAll("[data-stability-days]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const days = Number(button.dataset.stabilityDays);
+      if (Number.isFinite(days)) {
+        refreshConnectionHistory(days);
+      }
+    });
+  });
   document.querySelectorAll("[data-speedtest-days]").forEach((button) => {
     button.addEventListener("click", () => {
       const range = button.dataset.speedtestDays;
@@ -531,6 +569,8 @@ async function refreshAll({ quiet = false } = {}) {
     api("/api/speedtest/status"),
     api(`/api/speedtest/history?days=${state.speedTestDays}`),
     api("/api/g4ar/root/status"),
+    api(`/api/connection/history?days=${state.connectionDays}`),
+    api("/api/gateway/details"),
   ]);
 
   const errors = [];
@@ -594,6 +634,14 @@ async function refreshAll({ quiet = false } = {}) {
   } else {
     errors.push(`Root research: ${results[11].reason.message}`);
   }
+  if (results[12].status === "fulfilled") {
+    state.connectionHistory = results[12].value;
+  } else {
+    errors.push(`Connection history: ${results[12].reason.message}`);
+  }
+  // Device details need a gateway login; without one the card falls back to
+  // the overview's device block, so a failure here is not worth a banner.
+  state.gatewayDetails = results[13].status === "fulfilled" ? results[13].value : null;
 
   await applySpeedTestDefaultRange();
 
@@ -620,10 +668,11 @@ async function refreshLiveData() {
   }
 
   state.liveRefreshing = true;
-  const [statusResult, overviewResult, historyResult] = await Promise.allSettled([
+  const [statusResult, overviewResult, historyResult, connectionResult] = await Promise.allSettled([
     api("/api/status"),
     api("/api/gateway/overview"),
     api(`/api/gateway/telemetry/history?hours=${state.telemetryHours}`),
+    api(`/api/connection/history?days=${state.connectionDays}`),
   ]);
   if (statusResult.status === "fulfilled") {
     state.status = statusResult.value;
@@ -634,12 +683,16 @@ async function refreshLiveData() {
   if (historyResult.status === "fulfilled") {
     state.telemetryHistory = historyResult.value;
   }
+  if (connectionResult.status === "fulfilled") {
+    state.connectionHistory = connectionResult.value;
+  }
 
   renderHeader();
   renderOverviewMetrics();
   renderRadioStack();
   renderSignal();
   renderTelemetryTrends();
+  renderConnectionStability();
   renderDetails();
   setText(els.lastRefresh, `Live ${formatTime(new Date())}`);
   state.lastLiveRefreshAt = Date.now();
@@ -656,6 +709,21 @@ async function refreshTelemetryHistory(hours) {
     renderTelemetryTrends();
   } catch (error) {
     showError(`Telemetry history: ${error.message}`);
+  }
+}
+
+async function refreshConnectionHistory(days) {
+  state.connectionDays = Math.max(1, Math.min(90, Number(days) || 14));
+  renderConnectionStability();
+  try {
+    state.connectionHistory = await api(
+      `/api/connection/history?days=${state.connectionDays}`
+    );
+    renderConnectionStability();
+    renderTelemetryTrends();
+    renderSpeedTests();
+  } catch (error) {
+    showError(`Connection history: ${error.message}`);
   }
 }
 
@@ -749,6 +817,7 @@ function renderAll() {
   renderRadioStack();
   renderTelemetryTrends();
   renderSpeedTests();
+  renderConnectionStability();
   renderSignal();
   renderDetails();
   renderControls();
@@ -1345,6 +1414,12 @@ function renderRadioStack() {
     if (factEntries.length) {
       card.append(facts);
     }
+    if (radio.note) {
+      const note = document.createElement("p");
+      note.className = "radio-card-note";
+      note.textContent = radio.note;
+      card.append(note);
+    }
     els.radioCards.append(card);
   }
 }
@@ -1378,6 +1453,7 @@ function renderTelemetryTrends() {
     button.classList.toggle("is-active", Number(button.dataset.telemetryHours) === state.telemetryHours);
   });
 
+  const markers = connectionMarkers();
   renderLineChart(
     els.rsrpTrendChart,
     points,
@@ -1385,7 +1461,7 @@ function renderTelemetryTrends() {
       { key: "lte", label: "4G LTE", className: "chart-series--lte", read: (point) => point.radios?.lte?.metrics?.rsrp },
       { key: "nr", label: "5G NR", className: "chart-series--nr", read: (point) => point.radios?.nr?.metrics?.rsrp },
     ],
-    { unit: "dBm", decimals: 0, emptyText: "RSRP history will appear after two gateway samples." }
+    { unit: "dBm", decimals: 0, markers, emptyText: "RSRP history will appear after two gateway samples." }
   );
   renderLineChart(
     els.sinrTrendChart,
@@ -1394,11 +1470,21 @@ function renderTelemetryTrends() {
       { key: "lte", label: "4G LTE", className: "chart-series--lte", read: (point) => point.radios?.lte?.metrics?.sinr },
       { key: "nr", label: "5G NR", className: "chart-series--nr", read: (point) => point.radios?.nr?.metrics?.sinr },
     ],
-    { unit: "dB", decimals: 0, emptyText: "SINR history will appear when the gateway exposes it." }
+    { unit: "dB", decimals: 0, markers, emptyText: "SINR history will appear when the gateway exposes it." }
+  );
+  renderLineChart(
+    els.cqiTrendChart,
+    points,
+    [
+      { key: "lte", label: "4G LTE", className: "chart-series--lte", read: (point) => point.radios?.lte?.metrics?.cqi },
+      { key: "nr", label: "5G NR", className: "chart-series--nr", read: (point) => point.radios?.nr?.metrics?.cqi },
+    ],
+    { unit: "", decimals: 0, markers, emptyText: "CQI history needs the gateway login for advanced cell data." }
   );
   els.temperatureMetricCard.hidden = !hasTemperature;
   els.temperatureTrendPanel.hidden = !hasTemperature;
-  els.telemetryTrendGrid.classList.toggle("trend-grid--two", !hasTemperature);
+  // Three charts sit in one row; a fourth (temperature) makes a 2x2 grid.
+  els.telemetryTrendGrid.classList.toggle("trend-grid--two", hasTemperature);
   if (hasTemperature) {
     renderLineChart(
       els.temperatureTrendChart,
@@ -1406,7 +1492,7 @@ function renderTelemetryTrends() {
       [
         { key: "temperature", label: "Gateway", className: "chart-series--thermal", read: (point) => point.system?.temperature_c },
       ],
-      { unit: "C", decimals: 1, emptyText: "Temperature history will appear after two sensor samples." }
+      { unit: "C", decimals: 1, markers, emptyText: "Temperature history will appear after two sensor samples." }
     );
   } else {
     replaceChildren(els.temperatureTrendChart);
@@ -1624,10 +1710,17 @@ function renderSpeedTests() {
   }
 
   const nextRun = status.next_run_at ? formatDate(status.next_run_at) : "";
+  // Dayparts follow the gateway's clock when it reports a zone, which keeps
+  // them right across daylight-saving changes; otherwise the saved offset.
+  const zoneNote = Number.isFinite(status.timezone_offset_minutes)
+    ? ` · dayparts in ${formatUtcOffset(status.timezone_offset_minutes)}${
+        status.timezone_source === "gateway" ? " from the gateway clock" : ""
+      }`
+    : "";
   setText(
     els.speedTestNextRun,
     nextRun
-      ? `Next: ${nextRun}${status.next_daypart ? ` (${status.next_daypart})` : ""}`
+      ? `Next: ${nextRun}${status.next_daypart ? ` (${status.next_daypart})` : ""}${zoneNote}`
       : "Automatic tests are off"
   );
   renderSpeedTestSchedulePreview();
@@ -1653,9 +1746,30 @@ function renderSpeedTests() {
       unit: "Mbps",
       decimals: 1,
       historyHours: Number(history.range_days || state.speedTestDays) * 24,
+      markers: connectionMarkers(),
       emptyText: "Run a test or enable a schedule to begin speed history.",
     }
   );
+
+  // Averages per radio connection: the comparison that tells whether a mode
+  // or band change actually moved throughput.
+  replaceChildren(els.speedTestConnections);
+  const connections = Array.isArray(history.connections) ? history.connections : [];
+  els.speedTestConnections.hidden = !connections.length;
+  for (const group of connections) {
+    const item = document.createElement("article");
+    item.className = "daypart-item";
+    const label = document.createElement("span");
+    label.textContent = group.label;
+    const value = document.createElement("strong");
+    value.textContent = `${Number(group.download_mbps).toFixed(0)} down / ${Number(group.upload_mbps).toFixed(0)} up`;
+    const count = document.createElement("small");
+    count.textContent = `${group.count} sample${group.count === 1 ? "" : "s"}${
+      group.count < 5 ? " · too few to compare yet" : ""
+    }`;
+    item.append(label, value, count);
+    els.speedTestConnections.append(item);
+  }
 
   replaceChildren(els.speedTestDayparts);
   const dayparts = Array.isArray(history.dayparts) ? history.dayparts : [];
@@ -1676,6 +1790,244 @@ function renderSpeedTests() {
   if (!dayparts.length) {
     els.speedTestDayparts.append(emptyNode("Daypart averages will appear as scheduled tests rotate."));
   }
+}
+
+const CONNECTION_CHANGE_LABELS = {
+  mode: "Mode change",
+  site: "New cell site",
+  band: "Band change",
+  sector: "Sector change",
+  cell: "Cell change",
+  gateway_restarted: "Gateway restart",
+  firmware_changed: "Firmware",
+  registration_changed: "Registration",
+};
+
+// Handovers and restarts drawn onto the history charts, so a step in signal
+// or throughput can be read against what the radio was doing at the time.
+function connectionMarkers() {
+  const changes = Array.isArray(state.connectionHistory?.changes)
+    ? state.connectionHistory.changes
+    : [];
+  return changes
+    .filter((event) => event.kind !== "registration_changed")
+    .map((event) => ({
+      time: new Date(event.timestamp).getTime(),
+      label: event.message,
+      tone: event.kind === "gateway_restarted" ? "restart" : "connection",
+    }))
+    .filter((marker) => Number.isFinite(marker.time));
+}
+
+function renderConnectionStability() {
+  const history = state.connectionHistory;
+  document.querySelectorAll("[data-stability-days]").forEach((button) => {
+    button.classList.toggle(
+      "is-active",
+      Number(button.dataset.stabilityDays) === state.connectionDays
+    );
+  });
+  if (!history) {
+    setTag(els.stabilityTag, "Loading", "muted");
+    return;
+  }
+
+  const outages = history.outages || {};
+  const current = history.current;
+  setText(
+    els.stabilityCurrentLabel,
+    current && current.mode !== "none"
+      ? compactJoin(
+          [
+            `Now on ${current.label}`,
+            current.bands,
+            current.site ? `site ${current.site}` : "",
+          ],
+          " · "
+        )
+      : "Current connection unknown"
+  );
+
+  const rangeLabel = `${history.range_days} days`;
+  const unrequested = Number(history.unrequested_restart_count || 0);
+  const outageCount = Number(outages.count || 0);
+  setTag(
+    els.stabilityTag,
+    outageCount || unrequested
+      ? `${outageCount} outage${outageCount === 1 ? "" : "s"}, ${unrequested} restart${unrequested === 1 ? "" : "s"}`
+      : "Stable",
+    outageCount || unrequested ? "warn" : "good"
+  );
+
+  setText(els.outageCount, String(outageCount));
+  setText(
+    els.outageCountDetail,
+    `${formatOutageDuration(outages.total_seconds || 0)} offline in ${rangeLabel}`
+  );
+  setText(
+    els.outageMedian,
+    outages.median_seconds != null ? formatOutageDuration(outages.median_seconds) : "--"
+  );
+  setText(
+    els.outageMedianDetail,
+    outages.longest_seconds != null
+      ? `Longest ${formatOutageDuration(outages.longest_seconds)}; measured to ${outages.resolution_seconds} s`
+      : "No outages in range"
+  );
+  setText(els.restartCount, String(history.restart_count || 0));
+  setText(
+    els.restartDetail,
+    unrequested
+      ? `${unrequested} not requested by this app`
+      : history.restart_count
+        ? "All requested by this app"
+        : "None in range"
+  );
+  const changes = Array.isArray(history.changes) ? history.changes : [];
+  const lastChange = changes.find((event) => event.kind === "connection_changed");
+  setText(els.connectionChangeCount, String(history.change_count || 0));
+  setText(
+    els.connectionChangeDetail,
+    lastChange ? `Last ${formatDate(lastChange.timestamp)}` : "No handovers in range"
+  );
+
+  renderOutageHours(outages);
+  renderOutageBreakdown(outages);
+  renderConnectionChangeList(changes);
+}
+
+function renderOutageHours(outages) {
+  const offset = Number(outages.timezone_offset_minutes);
+  setText(
+    els.outageHourZone,
+    Number.isFinite(offset) ? `Gateway time, ${formatUtcOffset(offset)}` : "Gateway time"
+  );
+  replaceChildren(els.outageHourChart);
+  const hourly = Array.isArray(outages.hourly) ? outages.hourly : [];
+  if (!outages.count || hourly.length !== 24) {
+    els.outageHourChart.append(emptyNode("No outages in this range."));
+    return;
+  }
+
+  const peak = Math.max(...hourly, 1);
+  const bars = document.createElement("div");
+  bars.className = "hour-bars";
+  bars.setAttribute("role", "img");
+  bars.setAttribute(
+    "aria-label",
+    `Outage starts by hour; most at ${formatHour(outages.peak_hour)} with ${outages.peak_hour_count}`
+  );
+  hourly.forEach((count, hour) => {
+    const bar = document.createElement("div");
+    bar.className = "hour-bar";
+    bar.classList.toggle("is-peak", count > 0 && count === peak);
+    bar.style.setProperty("--level", String(count / peak));
+    bar.title = `${formatHour(hour)}-${formatHour((hour + 1) % 24)}: ${count} outage${count === 1 ? "" : "s"}`;
+    bars.append(bar);
+  });
+  const axis = document.createElement("div");
+  axis.className = "hour-axis";
+  for (const hour of [0, 6, 12, 18]) {
+    const label = document.createElement("span");
+    label.textContent = formatHour(hour);
+    axis.append(label);
+  }
+  els.outageHourChart.append(bars, axis);
+}
+
+function renderOutageBreakdown(outages) {
+  replaceChildren(els.outageBreakdown);
+  const buckets = Array.isArray(outages.duration_buckets) ? outages.duration_buckets : [];
+  els.outageBreakdown.hidden = !outages.count;
+  for (const bucket of buckets) {
+    const item = document.createElement("article");
+    item.className = "daypart-item";
+    const label = document.createElement("span");
+    label.textContent = bucket.label;
+    const value = document.createElement("strong");
+    value.textContent = String(bucket.count);
+    item.append(label, value);
+    els.outageBreakdown.append(item);
+  }
+
+  const notes = [];
+  const count = Number(outages.count || 0);
+  if (count && outages.peak_hour_count >= 3 && outages.peak_hour_count / count >= 0.25) {
+    notes.push(
+      `${outages.peak_hour_count} of ${count} began between ${formatHour(outages.peak_hour)} and ` +
+        `${formatHour((outages.peak_hour + 1) % 24)}. A fixed time window points to scheduled ` +
+        "network work rather than signal."
+    );
+  }
+  const diagnoses = Array.isArray(outages.diagnoses) ? outages.diagnoses : [];
+  const diagnosed = diagnoses.filter((item) => item.key !== "unknown");
+  const undiagnosed = diagnoses.find((item) => item.key === "unknown")?.count || 0;
+  if (diagnosed.length) {
+    notes.push(
+      `At outage start: ${diagnosed.map((item) => `${item.count} ${item.label.toLowerCase()}`).join("; ")}.`
+    );
+  }
+  if (undiagnosed) {
+    notes.push(
+      diagnosed.length
+        ? `${undiagnosed} earlier outage${undiagnosed === 1 ? "" : "s"} predate diagnosis.`
+        : "New outages record whether the radio was still connected when they began."
+    );
+  }
+  setText(els.outageDiagnosis, notes.join(" "));
+}
+
+function renderConnectionChangeList(changes) {
+  replaceChildren(els.connectionChangeList);
+  if (!changes.length) {
+    els.connectionChangeList.append(
+      emptyNode("No handovers, restarts, or firmware changes in this range.")
+    );
+    return;
+  }
+  for (const event of changes.slice(0, 12)) {
+    const item = document.createElement("article");
+    item.className = `event-item change-item change-item--${event.kind}`;
+    const header = document.createElement("div");
+    const kind = document.createElement("strong");
+    kind.textContent =
+      CONNECTION_CHANGE_LABELS[event.details?.change] ||
+      CONNECTION_CHANGE_LABELS[event.kind] ||
+      humanize(event.kind);
+    const time = document.createElement("span");
+    time.textContent = formatDate(event.timestamp);
+    header.append(kind, time);
+    const message = document.createElement("p");
+    message.textContent = event.message;
+    item.append(header, message);
+    els.connectionChangeList.append(item);
+  }
+}
+
+function formatHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function formatUtcOffset(minutes) {
+  const sign = minutes < 0 ? "−" : "+";
+  const absolute = Math.abs(minutes);
+  const hours = Math.floor(absolute / 60);
+  const remainder = absolute % 60;
+  return `UTC${sign}${hours}${remainder ? `:${String(remainder).padStart(2, "0")}` : ""}`;
+}
+
+function formatOutageDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total < 60) {
+    return `${total} s`;
+  }
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) {
+    return `${hours} h ${minutes} min`;
+  }
+  return secs ? `${minutes} min ${secs} s` : `${minutes} min`;
 }
 
 function telemetryPointsWithCurrent() {
@@ -1808,6 +2160,25 @@ function renderLineChart(container, points, seriesDefinitions, options) {
     svg.append(label);
   });
 
+  for (const marker of options.markers || []) {
+    if (marker.time < minTime || marker.time > maxTime) {
+      continue;
+    }
+    const markerX = x(marker.time);
+    const span = { x1: markerX, y1: margin.top, x2: markerX, y2: margin.top + plotHeight };
+    const group = svgElement("g", { class: `chart-marker chart-marker--${marker.tone}` });
+    const markerTitle = svgElement("title");
+    markerTitle.textContent = `${formatDate(new Date(marker.time))}: ${marker.label}`;
+    // The visible line is a hairline; a wider transparent twin carries the
+    // tooltip so it can actually be hovered.
+    group.append(
+      markerTitle,
+      svgElement("line", { ...span, class: "chart-marker-line" }),
+      svgElement("line", { ...span, class: "chart-marker-hit" })
+    );
+    svg.append(group);
+  }
+
   for (const definition of series) {
     const path = definition.values
       .map((item, index) => `${index ? "L" : "M"} ${x(item.time).toFixed(2)} ${y(item.value).toFixed(2)}`)
@@ -1901,8 +2272,43 @@ function renderSignal() {
 
 function renderDetails() {
   renderDetailList(els.connectionDetails, state.overview?.connection, "No cellular session data yet.");
-  renderDetailList(els.deviceDetails, state.overview?.device, "No device data yet.");
+  renderDetailList(els.deviceDetails, deviceDetailData(), "No device data yet.");
   renderDetailList(els.wifiDetails, wifiDetailData(), wifiEmptyText());
+}
+
+function deviceDetailData() {
+  const overviewDevice = state.overview?.device || {};
+  const details = state.gatewayDetails;
+  if (!details) {
+    return overviewDevice;
+  }
+  const device = details.device || {};
+  const sim = details.sim || {};
+  const network = details.network || {};
+  const clock = details.clock || {};
+  let gatewayClock;
+  if (clock.timezone) {
+    const drift = Number(clock.drift_seconds);
+    gatewayClock = Number.isFinite(drift) && Math.abs(drift) >= 60
+      ? `${clock.timezone}, ${Math.abs(Math.round(drift / 60))} min ${drift > 0 ? "ahead" : "behind"}`
+      : `${clock.timezone}, in sync`;
+  }
+  return {
+    manufacturer: device.manufacturer || overviewDevice.manufacturer,
+    model: device.model || overviewDevice.model,
+    firmware: device.firmware || overviewDevice.firmware,
+    hardware: device.hardware || overviewDevice.hardware,
+    api_version: device.api_version,
+    serial: device.serial,
+    sim_status: sim.status,
+    phone_number: sim.phone_number,
+    iccid: sim.iccid,
+    imei: sim.imei,
+    imsi: sim.imsi,
+    apn: network.apn,
+    ipv6: network.ipv6,
+    gateway_clock: gatewayClock,
+  };
 }
 
 function wifiEmptyText() {

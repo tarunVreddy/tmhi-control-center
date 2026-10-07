@@ -6,6 +6,7 @@ import logging
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
 
@@ -485,12 +486,56 @@ class LowImpactSpeedTest:
         )
 
 
+# Reading the radio context must never delay or fail the test it describes.
+CONTEXT_TIMEOUT_SECONDS = 10.0
+
+
 class SpeedTestManager:
-    def __init__(self, settings: Any, store: EventStore) -> None:
+    def __init__(
+        self,
+        settings: Any,
+        store: EventStore,
+        *,
+        context_provider: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
+        timezone_provider: Callable[[], int | None] | None = None,
+    ) -> None:
         self.settings = settings
         self.store = store
         self.runner = LowImpactSpeedTest()
+        self.context_provider = context_provider
+        self.timezone_provider = timezone_provider
         self._stop_event = asyncio.Event()
+
+    def timezone_offset_minutes(self) -> int:
+        """The gateway's own UTC offset when it reports one, else the saved one.
+
+        The saved value is the browser's offset at the time settings were last
+        saved, so it goes stale at every daylight-saving change. The gateway
+        takes its clock from the network and follows the change itself.
+        """
+        if self.timezone_provider is not None:
+            offset = self.timezone_provider()
+            if offset is not None:
+                return offset
+        return self.settings.speedtest_timezone_offset_minutes
+
+    def _timezone_source(self) -> str:
+        if self.timezone_provider is not None and self.timezone_provider() is not None:
+            return "gateway"
+        return "settings"
+
+    async def _capture_context(self) -> dict[str, Any] | None:
+        if self.context_provider is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                self.context_provider(), timeout=CONTEXT_TIMEOUT_SECONDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Speed test radio context unavailable: %s", exc)
+            return None
 
     async def initialize(self) -> None:
         if self.settings.speedtest_cadence == "disabled":
@@ -510,7 +555,7 @@ class SpeedTestManager:
         else:
             next_run, slot_index = next_initial_slot(
                 datetime.now(timezone.utc),
-                self.settings.speedtest_timezone_offset_minutes,
+                self.timezone_offset_minutes(),
                 self.settings.speedtest_cadence,
             )
             await self.store.set_speed_test_schedule(next_run, slot_index)
@@ -550,6 +595,9 @@ class SpeedTestManager:
     ) -> dict[str, Any]:
         profile = self.settings.speedtest_profile
         observed_at = datetime.now(timezone.utc)
+        # Read before the test: a reading taken during it would show the radio
+        # under the test's own load.
+        context = None if self.runner.running else await self._capture_context()
         try:
             result = await self.runner.run(profile)
         except SpeedTestBusyError:
@@ -571,9 +619,11 @@ class SpeedTestManager:
                 "bytes_uploaded": progress.get("uploaded", 0),
                 "duration_seconds": 0,
                 "error": str(exc),
+                "context": context,
             }
             await self._finish_run(failure, trigger, slot_index)
             raise SpeedTestError(f"Speed test failed: {exc}") from exc
+        result = {**result, "context": context}
         await self._finish_run(result, trigger, slot_index)
         return result
 
@@ -588,7 +638,7 @@ class SpeedTestManager:
         ).astimezone(timezone.utc)
         local_hour = (
             observed_at
-            + timedelta(minutes=self.settings.speedtest_timezone_offset_minutes)
+            + timedelta(minutes=self.timezone_offset_minutes())
         ).hour
         daypart, _ = daypart_for_hour(local_hour)
         await self.store.record_speed_test(
@@ -613,7 +663,7 @@ class SpeedTestManager:
                 observed_at,
                 self.settings.speedtest_cadence,
                 completed_slot,
-                self.settings.speedtest_timezone_offset_minutes,
+                self.timezone_offset_minutes(),
             )
             await self.store.set_speed_test_schedule(next_run, next_index)
 
@@ -625,7 +675,7 @@ class SpeedTestManager:
         if next_run:
             local_hour = (
                 next_run
-                + timedelta(minutes=self.settings.speedtest_timezone_offset_minutes)
+                + timedelta(minutes=self.timezone_offset_minutes())
             ).hour
             next_daypart = daypart_for_hour(local_hour)[1]
         interval_minutes = INTERVAL_CADENCE_MINUTES.get(
@@ -648,7 +698,8 @@ class SpeedTestManager:
             else "disabled",
             "interval_minutes": interval_minutes,
             "retention_days": self.settings.speedtest_retention_days,
-            "timezone_offset_minutes": self.settings.speedtest_timezone_offset_minutes,
+            "timezone_offset_minutes": self.timezone_offset_minutes(),
+            "timezone_source": self._timezone_source(),
             "rotating_hours": list(ROTATING_HOURS),
             "latest": latest,
             "provider": "cloudflare",
