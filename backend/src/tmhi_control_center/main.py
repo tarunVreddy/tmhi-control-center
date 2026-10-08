@@ -562,6 +562,20 @@ async def _gateway_accepts(password: str, *, password_configured: bool) -> bool:
         await candidate.close()
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def root_favicon() -> FileResponse:
+    return FileResponse(STATIC_DIR / "favicon.ico", media_type="image/x-icon")
+
+
+@app.get("/apple-touch-icon{variant:path}", include_in_schema=False)
+async def root_touch_icon(variant: str) -> FileResponse:
+    # iOS asks for sized and precomposed variants it never links to; one icon
+    # serves them all, and anything else under this name is not ours.
+    if not variant.endswith(".png") or "/" in variant:
+        raise HTTPException(status_code=404)
+    return FileResponse(STATIC_DIR / "apple-touch-icon.png", media_type="image/png")
+
+
 @app.get("/api/version")
 async def version() -> JSONResponse:
     return JSONResponse(

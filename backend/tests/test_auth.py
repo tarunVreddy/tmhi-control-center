@@ -90,6 +90,26 @@ def test_signed_out_browser_gets_sign_in_page_and_401s(monkeypatch, tmp_path) ->
     assert stylesheet.status_code == 200
 
 
+def test_root_icons_are_served_without_a_session(monkeypatch, tmp_path) -> None:
+    main = load_main(monkeypatch, tmp_path, saved_password=GATEWAY_PASSWORD)
+
+    with TestClient(main.app) as client:
+        touch = client.get("/apple-touch-icon.png")
+        sized = client.get("/apple-touch-icon-180x180-precomposed.png")
+        favicon = client.get("/favicon.ico")
+        not_an_icon = client.get("/apple-touch-icon-evil/../../api/status")
+        manifest = client.get("/static/site.webmanifest")
+
+    for response in (touch, sized):
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == (main.STATIC_DIR / "apple-touch-icon.png").read_bytes()
+    assert favicon.status_code == 200
+    assert not_an_icon.status_code in (401, 404)
+    # The icons have transparent rounded corners, so they are not maskable.
+    assert {icon["purpose"] for icon in manifest.json()["icons"]} == {"any"}
+
+
 def test_saved_password_signs_in_without_asking_the_gateway(monkeypatch, tmp_path) -> None:
     main = load_main(monkeypatch, tmp_path, saved_password=GATEWAY_PASSWORD)
     attempts = fake_gateway(monkeypatch, main, accepts=GATEWAY_PASSWORD)
