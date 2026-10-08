@@ -3289,7 +3289,9 @@ function renderClients() {
         compactJoin([device.interface, device.band || device.ssid], " / ") ||
           (through ? "Through another device" : "Unknown")
       ),
-      tableCell(device.vendor || "Unknown"),
+      // A locally administered MAC (randomized for privacy, or virtual) has no
+      // vendor registration to look up, so say why instead of "Unknown".
+      tableCell(device.vendor || (device.mac_randomized ? "Randomized MAC" : "Unknown")),
       tableCell(deviceGuessNode(identification))
     );
     els.clientTableBody.append(row);
