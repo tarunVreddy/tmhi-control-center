@@ -60,7 +60,7 @@ def _readiness(
         "score": score,
         "label": label,
         "summary": _readiness_summary(score, signal_score, online),
-        "next_best_action": next_action["action"] if next_action else "Run a placement sweep and save the snapshot.",
+        "next_best_action": next_action["action"] if next_action else "Run a check after a placement change and save the snapshot.",
     }
 
 
@@ -70,7 +70,7 @@ def _readiness_summary(score: int, signal_score: int | None, online: Any) -> str
     if signal_score is not None and signal_score < 50:
         return "Core setup is usable, but signal quality should be tuned before chasing firmware or tower changes."
     if score >= 85:
-        return "The key setup pieces are in place. Use sweeps and snapshots to tune placement over time."
+        return "The key setup pieces are in place. Use checks and snapshots to tune placement over time."
     if score >= 65:
         return "The control center is usable. Finish the remaining setup items to make troubleshooting easier."
     return "Start with gateway login, map center, and a baseline signal reading."
@@ -288,13 +288,13 @@ def _signal_coach(overview: dict[str, Any], map_data: dict[str, Any]) -> list[di
         tips.append(
             _tip(
                 "Serving tower is mapped",
-                "Use the map line as an aiming baseline, then run a sweep after each antenna or placement change.",
+                "Use the map line as an aiming baseline, then run a check after each antenna or placement change.",
                 "good",
             )
         )
     tips.append(
         _tip(
-            "Run repeatable sweeps",
+            "Make repeatable changes",
             "Change one thing at a time, wait for the gateway to settle, then compare signal, ping, loss, and connected cell.",
             "info",
         )
@@ -347,7 +347,7 @@ def _homelab_cards(
             "actions": [
                 "Save the map center.",
                 "Refresh nearby towers.",
-                "Run sweeps after each antenna angle or gateway placement change.",
+                "Run a check after each antenna angle or gateway placement change.",
             ],
         },
         {

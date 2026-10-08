@@ -301,11 +301,6 @@ class RebootRequest(BaseModel):
     force: bool = False
 
 
-class CheckSeriesRequest(BaseModel):
-    count: int = Field(default=3, ge=1, le=30)
-    interval_seconds: float = Field(default=5.0, ge=0.0, le=300.0)
-
-
 class GatewayTestRequest(BaseModel):
     gateway_password: str = Field(default="", max_length=512, repr=False)
 
@@ -1320,14 +1315,6 @@ async def events(limit: int = Query(default=10, ge=1, le=500)) -> list[dict[str,
 @app.post("/api/check")
 async def check_now() -> dict[str, Any]:
     return await watchdog.check_once(allow_reboot=False)
-
-
-@app.post("/api/check/series")
-async def check_series(request: CheckSeriesRequest) -> dict[str, Any]:
-    return await watchdog.check_series(
-        count=request.count,
-        interval_seconds=request.interval_seconds,
-    )
 
 
 @app.post("/api/gateway/test")

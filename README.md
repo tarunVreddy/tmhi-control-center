@@ -243,11 +243,13 @@ important notes about tower locking limitations.
 `Homelab` shows the setup score, next action, signal and antenna coach, router
 offload/SQM playbook, and the direct Docker G4AR recovery workflow.
 
-`Diagnostics` shows connectivity probes, event history, raw gateway sections,
-and repeated probe sweeps.
+`Stability` shows outages, gateway restarts, connection and IPv6 changes on a
+timeline, the latest connectivity probes with a Check Now button, and an
+activity log of sign-ins, settings changes, reboots, and app events.
 
 `Settings` stores gateway login, theme preference, tower data, automatic speed
-tests and retention, watchdog settings, and advanced G4AR lab settings.
+tests and retention, watchdog settings, and advanced G4AR lab settings, with the raw
+gateway API data in a collapsed section at the bottom.
 
 ## G4AR Unlock / Radio Lab
 

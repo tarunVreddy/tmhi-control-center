@@ -2409,8 +2409,7 @@ summary:focus-visible {
   transform: translateX(20px);
 }
 
-.button-row,
-.sweep-controls {
+.button-row {
   display: flex;
   flex-wrap: wrap;
   gap: 9px;
@@ -2484,42 +2483,38 @@ summary:focus-visible {
 }
 
 .clients-section,
-.diagnostics-section {
+.latest-check-section,
+.activity-section,
+.raw-gateway-section {
   margin-top: 16px;
 }
 
-.tabs {
+.metric-card--link {
+  cursor: pointer;
+}
+
+.metric-card--link:hover {
+  border-color: var(--line-strong);
+}
+
+.activity-filters {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
 }
 
-.tab {
-  min-height: 38px;
-  padding: 7px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--muted);
-  background: var(--surface-soft);
-  font-weight: 850;
-  white-space: nowrap;
+.activity-section .event-list {
+  max-height: 560px;
+  overflow-y: auto;
 }
 
-.tab.is-active {
-  color: #ffffff;
-  border-color: var(--blue);
-  background: var(--blue);
+.raw-gateway-section summary {
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
 }
 
-.tab-panel {
-  display: none;
-  padding-top: 14px;
-}
-
-.tab-panel.is-active {
-  display: block;
+.raw-gateway-section details[open] summary {
+  margin-bottom: 14px;
 }
 
 .table-wrap {
@@ -2671,11 +2666,6 @@ th {
 
 .gateway-data-list {
   padding: 0 12px 10px;
-}
-
-.sweep-controls {
-  align-items: end;
-  margin-bottom: 14px;
 }
 
 .theme-switch {

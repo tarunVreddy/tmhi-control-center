@@ -108,32 +108,6 @@ async def test_dry_run_never_calls_gateway_reboot(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_check_series_runs_requested_checks_without_reboot(tmp_path) -> None:
-    settings = Settings(
-        gateway_password="secret",
-        dry_run=False,
-        startup_grace_seconds=0,
-        failure_threshold_seconds=0,
-        database_path=str(tmp_path / "control-center.db"),
-    )
-    store = EventStore(settings.database_path)
-    await store.initialize()
-    checker = FakeChecker(False)
-    gateway = FakeGateway()
-    watchdog = Watchdog(settings, checker, gateway, store)
-    await watchdog.initialize()
-
-    result = await watchdog.check_series(count=3, interval_seconds=0)
-
-    assert result["requested_count"] == 3
-    assert result["completed_count"] == 3
-    assert len(result["results"]) == 3
-    assert checker.calls == 3
-    assert gateway.reboot_calls == 0
-    assert result["results"][-1]["status"]["phase"] == "outage_confirmed"
-
-
-@pytest.mark.asyncio
 async def test_gateway_detection_updates_status_on_online_check(tmp_path) -> None:
     settings = Settings(
         watchdog_enabled=False,

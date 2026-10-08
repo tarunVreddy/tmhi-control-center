@@ -38,10 +38,19 @@
               <small>Live status</small>
             </span>
           </button>
+          <button class="nav-item" type="button" data-view="stability">
+            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
+            <span class="nav-short" aria-hidden="true">Stability</span>
+            <span class="nav-index">02</span>
+            <span>
+              <strong>Stability</strong>
+              <small>Outages and activity</small>
+            </span>
+          </button>
           <button class="nav-item" type="button" data-view="devices">
             <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 5h13v9H3z M1 18h17 M19 8h4v11h-4z" /></svg>
             <span class="nav-short" aria-hidden="true">Devices</span>
-            <span class="nav-index">02</span>
+            <span class="nav-index">03</span>
             <span>
               <strong>Devices</strong>
               <small>Wi-Fi and LAN</small>
@@ -50,7 +59,7 @@
           <button class="nav-item" type="button" data-view="map">
             <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z M9 4v14 M15 6v14" /></svg>
             <span class="nav-short" aria-hidden="true">Map</span>
-            <span class="nav-index">03</span>
+            <span class="nav-index">04</span>
             <span>
               <strong>Map</strong>
               <small>Towers nearby</small>
@@ -59,7 +68,7 @@
           <button class="nav-item" type="button" data-view="aim">
             <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M18 12a6 6 0 1 1-12 0 6 6 0 0 1 12 0z M12 2v5 M12 17v5 M2 12h5 M17 12h5" /></svg>
             <span class="nav-short" aria-hidden="true">Aim</span>
-            <span class="nav-index">04</span>
+            <span class="nav-index">05</span>
             <span>
               <strong>Aim</strong>
               <small>Live signal</small>
@@ -68,19 +77,10 @@
           <button class="nav-item" type="button" data-view="homelab">
             <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 4h16v6H4z M4 14h16v6H4z M8 7h.01 M8 17h.01 M12 7h4 M12 17h4" /></svg>
             <span class="nav-short" aria-hidden="true">Lab</span>
-            <span class="nav-index">05</span>
+            <span class="nav-index">06</span>
             <span>
               <strong>Homelab</strong>
               <small>Tune and backup</small>
-            </span>
-          </button>
-          <button class="nav-item" type="button" data-view="diagnostics">
-            <svg class="icon nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l3-8 4 16 3-8h4" /></svg>
-            <span class="nav-short" aria-hidden="true">Logs</span>
-            <span class="nav-index">06</span>
-            <span>
-              <strong>Diagnostics</strong>
-              <small>Probes and data</small>
             </span>
           </button>
           <button class="nav-item" type="button" data-view="settings">
@@ -172,7 +172,7 @@
                   <strong id="connectedMetric">0</strong>
                   <small id="connectedDetail">Connected clients</small>
                 </article>
-                <article class="metric-card">
+                <article class="metric-card metric-card--link" data-view="stability" role="button" tabindex="0" title="Open Stability">
                   <span>Probes</span>
                   <strong id="probeMetric">0 / 0</strong>
                   <small id="probeDetail">Required checks</small>
@@ -324,94 +324,6 @@
                   <div id="speedTestTrendChart" class="telemetry-chart"></div>
                   <div id="speedTestDayparts" class="daypart-grid"></div>
                   <div id="speedTestConnections" class="daypart-grid speed-connection-grid" hidden></div>
-                </article>
-              </div>
-            </section>
-
-            <section class="trends-section speed-history-section stability-section" aria-labelledby="stabilityHeading">
-              <div class="section-heading">
-                <div>
-                  <p class="eyebrow">Connection History</p>
-                  <h2 id="stabilityHeading">Connection Stability</h2>
-                  <small id="stabilityCurrentLabel" class="muted">Waiting for gateway data</small>
-                </div>
-                <div class="section-actions">
-                  <span id="stabilityTag" class="tag tag--muted">Loading</span>
-                  <div class="segmented-control" aria-label="Connection history range">
-                    <button class="segment-button" type="button" data-stability-days="7">7d</button>
-                    <button class="segment-button is-active" type="button" data-stability-days="14">14d</button>
-                    <button class="segment-button" type="button" data-stability-days="30">30d</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="speed-summary-grid stability-summary-grid">
-                <article class="speed-summary-item">
-                  <span>Internet Outages</span>
-                  <strong id="outageCount">--</strong>
-                  <small id="outageCountDetail">Loading</small>
-                </article>
-                <article class="speed-summary-item">
-                  <span>Typical Outage</span>
-                  <strong id="outageMedian">--</strong>
-                  <small id="outageMedianDetail">Loading</small>
-                </article>
-                <article class="speed-summary-item">
-                  <span>Gateway Restarts</span>
-                  <strong id="restartCount">--</strong>
-                  <small id="restartDetail">Loading</small>
-                </article>
-                <article class="speed-summary-item">
-                  <span>Connection Changes</span>
-                  <strong id="connectionChangeCount">--</strong>
-                  <small id="connectionChangeDetail">Loading</small>
-                </article>
-                <!-- Only shown once IPv6 has worked from this install. -->
-                <article id="ipv6Card" class="speed-summary-item ipv6-summary-item" hidden>
-                  <span>IPv6</span>
-                  <strong id="ipv6Status">--</strong>
-                  <small id="ipv6Detail">Loading</small>
-                </article>
-              </div>
-
-              <article class="chart-panel timeline-panel">
-                <div class="chart-heading timeline-heading">
-                  <div>
-                    <span>Drag, click, or use arrow keys</span>
-                    <strong>Timeline</strong>
-                  </div>
-                  <div id="timelineFilters" class="timeline-filters" aria-label="Show or hide event types"></div>
-                </div>
-                <div
-                  id="connectionTimeline"
-                  class="timeline"
-                  tabindex="0"
-                  role="slider"
-                  aria-label="Connection timeline"
-                ></div>
-                <div id="timelineDetail" class="timeline-detail" aria-live="polite"></div>
-              </article>
-
-              <div class="stability-grid">
-                <article class="chart-panel">
-                  <div class="chart-heading">
-                    <div>
-                      <span>When Outages Start</span>
-                      <strong>By Hour of Day</strong>
-                    </div>
-                    <small id="outageHourZone">Gateway time</small>
-                  </div>
-                  <div id="outageHourChart" class="hour-chart"></div>
-                </article>
-                <article class="chart-panel">
-                  <div class="chart-heading">
-                    <div>
-                      <span>How Long They Last</span>
-                      <strong>Outage Lengths</strong>
-                    </div>
-                  </div>
-                  <div id="outageBreakdown" class="bar-list"></div>
-                  <p id="outageDiagnosis" class="privacy-note"></p>
                 </article>
               </div>
             </section>
@@ -689,27 +601,112 @@
           </section>
 
           <section
-            id="view-diagnostics"
+            id="view-stability"
             class="app-view"
-            data-view-panel="diagnostics"
-            aria-labelledby="diagnosticsHeading"
+            data-view-panel="stability"
+            aria-labelledby="stabilityHeading"
           >
-            <section class="workspace-section diagnostics-section">
+            <section class="trends-section speed-history-section stability-section" aria-labelledby="stabilityHeading">
               <div class="section-heading">
                 <div>
-                  <p class="eyebrow">Diagnostics</p>
-                  <h2 id="diagnosticsHeading">Data and History</h2>
+                  <p class="eyebrow">Connection History</p>
+                  <h2 id="stabilityHeading">Connection Stability</h2>
+                  <small id="stabilityCurrentLabel" class="muted">Waiting for gateway data</small>
+                </div>
+                <div class="section-actions">
+                  <span id="stabilityTag" class="tag tag--muted">Loading</span>
+                  <div class="segmented-control" aria-label="Connection history range">
+                    <button class="segment-button" type="button" data-stability-days="7">7d</button>
+                    <button class="segment-button is-active" type="button" data-stability-days="14">14d</button>
+                    <button class="segment-button" type="button" data-stability-days="30">30d</button>
+                  </div>
                 </div>
               </div>
 
-              <div class="tabs" role="tablist" aria-label="Diagnostics views">
-                <button class="tab is-active" type="button" data-tab="probes">Probes</button>
-                <button class="tab" type="button" data-tab="events">Events</button>
-                <button class="tab" type="button" data-tab="gateway-data">Gateway Data</button>
-                <button class="tab" type="button" data-tab="sweep">Sweep</button>
+              <div class="speed-summary-grid stability-summary-grid">
+                <article class="speed-summary-item">
+                  <span>Internet Outages</span>
+                  <strong id="outageCount">--</strong>
+                  <small id="outageCountDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Typical Outage</span>
+                  <strong id="outageMedian">--</strong>
+                  <small id="outageMedianDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Gateway Restarts</span>
+                  <strong id="restartCount">--</strong>
+                  <small id="restartDetail">Loading</small>
+                </article>
+                <article class="speed-summary-item">
+                  <span>Connection Changes</span>
+                  <strong id="connectionChangeCount">--</strong>
+                  <small id="connectionChangeDetail">Loading</small>
+                </article>
+                <!-- Only shown once IPv6 has worked from this install. -->
+                <article id="ipv6Card" class="speed-summary-item ipv6-summary-item" hidden>
+                  <span>IPv6</span>
+                  <strong id="ipv6Status">--</strong>
+                  <small id="ipv6Detail">Loading</small>
+                </article>
               </div>
 
-              <div id="tab-probes" class="tab-panel is-active">
+              <article class="chart-panel timeline-panel">
+                <div class="chart-heading timeline-heading">
+                  <div>
+                    <span>Drag, click, or use arrow keys</span>
+                    <strong>Timeline</strong>
+                  </div>
+                  <div id="timelineFilters" class="timeline-filters" aria-label="Show or hide event types"></div>
+                </div>
+                <div
+                  id="connectionTimeline"
+                  class="timeline"
+                  tabindex="0"
+                  role="slider"
+                  aria-label="Connection timeline"
+                ></div>
+                <div id="timelineDetail" class="timeline-detail" aria-live="polite"></div>
+              </article>
+
+              <div class="stability-grid">
+                <article class="chart-panel">
+                  <div class="chart-heading">
+                    <div>
+                      <span>When Outages Start</span>
+                      <strong>By Hour of Day</strong>
+                    </div>
+                    <small id="outageHourZone">Gateway time</small>
+                  </div>
+                  <div id="outageHourChart" class="hour-chart"></div>
+                </article>
+                <article class="chart-panel">
+                  <div class="chart-heading">
+                    <div>
+                      <span>How Long They Last</span>
+                      <strong>Outage Lengths</strong>
+                    </div>
+                  </div>
+                  <div id="outageBreakdown" class="bar-list"></div>
+                  <p id="outageDiagnosis" class="privacy-note"></p>
+                </article>
+              </div>
+            </section>
+
+            <section class="workspace-section latest-check-section" aria-labelledby="latestCheckHeading">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Connectivity Probes</p>
+                  <h2 id="latestCheckHeading">Latest Check</h2>
+                  <small id="latestCheckLabel" class="muted">Checked automatically every few seconds</small>
+                </div>
+                <div class="section-actions">
+                  <button id="stabilityCheckButton" class="button button--secondary" type="button">
+                    Check Now
+                  </button>
+                </div>
+              </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
@@ -723,60 +720,18 @@
                     <tbody id="probeTableBody"></tbody>
                   </table>
                 </div>
-              </div>
+            </section>
 
-              <div id="tab-events" class="tab-panel">
-                <div id="eventsList" class="event-list"></div>
-              </div>
-
-              <div id="tab-gateway-data" class="tab-panel">
-                <div id="gatewaySections" class="gateway-section-list"></div>
-              </div>
-
-              <div id="tab-sweep" class="tab-panel">
-                <div class="sweep-controls">
-                  <label class="field field--inline">
-                    <span>Runs</span>
-                    <input id="seriesCount" type="number" min="1" max="30" value="5" />
-                  </label>
-                  <label class="field field--inline">
-                    <span>Interval</span>
-                    <input
-                      id="seriesInterval"
-                      type="number"
-                      min="0"
-                      max="300"
-                      step="0.5"
-                      value="5"
-                    />
-                  </label>
-                  <button id="seriesStartButton" class="button button--primary" type="button">
-                    Start Sweep
-                  </button>
-                  <button
-                    id="seriesStopButton"
-                    class="button button--secondary"
-                    type="button"
-                    disabled
-                  >
-                    Stop
-                  </button>
+            <section class="workspace-section activity-section" aria-labelledby="activityHeading">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Event Log</p>
+                  <h2 id="activityHeading">Activity</h2>
+                  <small class="muted">Sign-ins, changes, outages and app events</small>
                 </div>
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Time</th>
-                        <th>Internet</th>
-                        <th>Probes</th>
-                        <th>Phase</th>
-                      </tr>
-                    </thead>
-                    <tbody id="seriesTableBody"></tbody>
-                  </table>
-                </div>
+                <div id="activityFilters" class="segmented-control activity-filters" aria-label="Filter activity"></div>
               </div>
+              <div id="eventsList" class="event-list"></div>
             </section>
           </section>
 
@@ -1370,6 +1325,17 @@
                 </button>
               </fieldset>
             </div>
+
+            <section class="workspace-section raw-gateway-section" aria-labelledby="rawGatewayHeading">
+              <details>
+                <summary>
+                  <span class="eyebrow">Advanced</span>
+                  <strong id="rawGatewayHeading">Raw Gateway Data</strong>
+                  <small class="muted">Every field the gateway API returned, with credentials hidden</small>
+                </summary>
+                <div id="gatewaySections" class="gateway-section-list"></div>
+              </details>
+            </section>
           </section>
         </main>
       </div>
