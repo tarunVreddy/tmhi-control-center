@@ -1704,6 +1704,7 @@ def _split_reached_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]
                     "ip_address": None,
                     "mac_address": mac,
                     "mac_oui": _mac_oui(mac),
+                    "mac_randomized": _is_locally_administered(mac),
                     "interface": None,
                     "ssid": None,
                     "band": None,
@@ -1847,6 +1848,7 @@ def _client_from_mapping(
         "ip_address": ip_address,
         "mac_address": mac,
         "mac_oui": _mac_oui(mac),
+        "mac_randomized": bool(mac) and _is_locally_administered(mac),
         "interface": _string_or_none(
             _find_deep_value(mapping, CLIENT_FIELD_CANDIDATES["interface"])
         )

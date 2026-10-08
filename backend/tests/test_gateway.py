@@ -689,6 +689,8 @@ def test_ipv6_addresses_are_classified_and_split_by_embedded_mac() -> None:
         }
     }
     payload["clients"]["ethernet"][0]["ipv6"].append("2001:db8:a:1:a8bb:ccff:fe11:2233")
+    # A randomized MAC (76:AC:2B…, local bit set) behind the router.
+    payload["clients"]["ethernet"][0]["ipv6"].append("2001:db8:a:1:74ac:2bff:fe00:4")
 
     devices = _connected_devices_from_payload(payload)
     by_mac = {device["mac_address"]: device for device in devices}
@@ -702,6 +704,8 @@ def test_ipv6_addresses_are_classified_and_split_by_embedded_mac() -> None:
     assert router.get("reached_through") is None
 
     vm = by_mac["BC:24:11:00:00:02"]
+    assert vm["mac_randomized"] is False
+    assert router["mac_randomized"] is False
     assert vm["reached_through"]["ip_address"] == "192.168.12.221"
     assert vm["ip_address"] is None
     assert vm["mac_oui"] == "BC:24:11"
@@ -719,7 +723,8 @@ def test_ipv6_addresses_are_classified_and_split_by_embedded_mac() -> None:
     # Children follow their parent entry.
     order = [device["mac_address"] for device in devices]
     assert order.index("BC:24:11:00:00:02") == order.index(router_mac) + 1
-    assert len(devices) == 4
+    assert by_mac["76:AC:2B:00:00:04"]["mac_randomized"] is True
+    assert len(devices) == 5
 
 
 def test_directly_connected_clients_keep_their_own_addresses() -> None:
