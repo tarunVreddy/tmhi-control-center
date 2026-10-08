@@ -13,5 +13,12 @@ services:
     cap_drop:
       - ALL
 
+networks:
+  default:
+    # Docker 27+ gives the network a private IPv6 subnet and routes it out
+    # through the host's own address. The app's IPv6 check only reports once
+    # IPv6 has actually worked, so IPv4-only hosts see no difference.
+    enable_ipv6: true
+
 volumes:
   tmhi_control_center_data:

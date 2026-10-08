@@ -59,6 +59,7 @@ from .gateway import (
 from .geolocation import PublicIpLocationError, PublicIpLocator
 from .g4ar_root import assess_g4ar_root_readiness, g4ar_root_research_status
 from .insights import build_homelab_insights
+from .ipv6 import IPV6_EVENT_KINDS, Ipv6Monitor
 from .speedtest import SpeedTestBusyError, SpeedTestError, SpeedTestManager
 from .storage import EventStore, compact_telemetry_snapshot
 from .telemetry import GatewayTelemetryCollector
@@ -173,6 +174,8 @@ telemetry_collector = GatewayTelemetryCollector(
     change_tracker=change_tracker,
 )
 telemetry_task: asyncio.Task[None] | None = None
+ipv6_monitor = Ipv6Monitor(store, internet_online=lambda: watchdog.state.internet_online)
+ipv6_task: asyncio.Task[None] | None = None
 STATIC_DIR = Path(__file__).parent / "static"
 FINGERPRINTED_ASSETS = ("app.js", "styles.css")
 
@@ -217,7 +220,7 @@ LOGIN_HTML, _ = _fingerprint_assets((STATIC_DIR / "login.html").read_text(encodi
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global watchdog_task, speed_test_task, telemetry_task
+    global watchdog_task, speed_test_task, telemetry_task, ipv6_task
     await store.initialize()
     try:
         await change_tracker.initialize()
@@ -234,6 +237,8 @@ async def lifespan(_: FastAPI):
         telemetry_collector.run(),
         name="tmhi-gateway-telemetry-collector",
     )
+    if settings.ipv6_check_enabled:
+        ipv6_task = asyncio.create_task(ipv6_monitor.run(), name="tmhi-ipv6-monitor")
     try:
         yield
     finally:
@@ -257,6 +262,13 @@ async def lifespan(_: FastAPI):
                 await telemetry_task
             except asyncio.CancelledError:
                 pass
+        if ipv6_task:
+            ipv6_task.cancel()
+            try:
+                await ipv6_task
+            except asyncio.CancelledError:
+                pass
+        await ipv6_monitor.close()
         await speed_test_manager.stop()
         await checker.close()
         await gateway.close()
@@ -702,6 +714,11 @@ async def connection_history(
             1 for event in restarts if not event["details"].get("requested_by_app")
         ),
         "outages": outages,
+        "ipv6": ipv6_monitor.summary(
+            await store.events_since(IPV6_EVENT_KINDS, since - timedelta(days=30)),
+            since=since,
+            now=now,
+        ),
     }
 
 

@@ -32,6 +32,7 @@ def load_main(monkeypatch, tmp_path, *, saved_password: str = "", auth: bool = T
     else:
         monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "false")
     monkeypatch.setenv("PUBLIC_IP_LOCATION_ENABLED", "false")
+    monkeypatch.setenv("IPV6_CHECK_ENABLED", "false")
     sys.modules.pop("tmhi_control_center.main", None)
     return importlib.import_module("tmhi_control_center.main")
 

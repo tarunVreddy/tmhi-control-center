@@ -131,6 +131,9 @@ const ids = [
   "connectionChangeCount",
   "connectionChangeDetail",
   "connectionTimeline",
+  "ipv6Card",
+  "ipv6Status",
+  "ipv6Detail",
   "connectedMetric",
   "connectionDetails",
   "cqiTrendChart",
@@ -2018,9 +2021,36 @@ function renderConnectionStability() {
     lastChange ? `Last ${formatDate(lastChange.timestamp)}` : "No handovers in range"
   );
 
+  renderIpv6Summary(history.ipv6);
   renderOutageHours(outages);
   renderOutageBreakdown(outages);
   renderConnectionTimeline();
+}
+
+function renderIpv6Summary(ipv6) {
+  const reported = Boolean(ipv6?.reported);
+  els.ipv6Card.hidden = !reported;
+  els.ipv6Card.closest(".stability-summary-grid")?.classList.toggle("has-ipv6", reported);
+  if (!reported) {
+    return;
+  }
+  const down = ipv6.status === "down";
+  const count = Number(ipv6.outages?.count || 0);
+  const prefixChanges = (ipv6.prefix_changes || []).length;
+  setText(els.ipv6Status, down ? "Down" : "Reachable");
+  els.ipv6Status.classList.toggle("is-bad", down);
+  setText(
+    els.ipv6Detail,
+    compactJoin(
+      [
+        count ? `${count} outage${count === 1 ? "" : "s"}` : "No outages",
+        prefixChanges ? `${prefixChanges} prefix change${prefixChanges === 1 ? "" : "s"}` : "",
+        ipv6.checked_at ? `checked ${formatRelative(Date.parse(ipv6.checked_at))}` : "",
+      ],
+      " · "
+    )
+  );
+  els.ipv6Card.title = ipv6.public_prefix ? `Current prefix ${ipv6.public_prefix}` : "";
 }
 
 function renderOutageHours(outages) {
@@ -2064,6 +2094,8 @@ function renderOutageHours(outages) {
 
 const TIMELINE_TYPES = {
   outage: { label: "Outages", title: "Internet outage", icon: "outage", tone: "red" },
+  ipv6_outage: { label: "IPv6 outages", title: "IPv6 outage", icon: "outage", tone: "amber" },
+  ipv6_prefix: { label: "IPv6 prefix", title: "IPv6 prefix change", icon: "prefix", tone: "amber" },
   restart: { label: "Restarts", title: "Gateway restart", icon: "restart", tone: "magenta" },
   mode: { label: "Mode changes", title: "Mode change", icon: "mode", tone: "blue" },
   site: { label: "Site changes", title: "New cell site", icon: "site", tone: "blue" },
@@ -2098,6 +2130,7 @@ const ICON_PATHS = {
   firmware: "M7 7h10v10H7z M9 3v3 M15 3v3 M9 18v3 M15 18v3 M3 9h3 M3 15h3 M18 9h3 M18 15h3",
   registration: "M4 20v-3 M9 20v-7 M14 20V9 M19 20V5 M3 3l18 18",
   outage: "M9 17H7a5 5 0 0 1 0-10h2 M15 7h2a5 5 0 0 1 4 8 M8 12h3 M3 3l18 18",
+  prefix: "M4 7h16 M4 12h9 M4 17h5 M15 14l3 3-3 3 M21 17h-6",
   prev: "M15 18l-6-6 6-6",
   next: "M9 18l6-6-6-6",
 };
@@ -2150,6 +2183,28 @@ function timelineEvents() {
       end: Number.isFinite(end) ? end : time,
       outage,
     });
+  }
+  // IPv6 only appears once it has worked from this install; see ipv6.py.
+  const ipv6 = history.ipv6?.reported ? history.ipv6 : null;
+  for (const outage of ipv6?.outages?.periods || []) {
+    const time = Date.parse(outage.started_at);
+    if (!Number.isFinite(time)) {
+      continue;
+    }
+    const end = Date.parse(outage.ended_at || history.range_end);
+    items.push({
+      key: `ipv6_outage:${outage.started_at}`,
+      type: "ipv6_outage",
+      time,
+      end: Number.isFinite(end) ? end : time,
+      outage,
+    });
+  }
+  for (const change of ipv6?.prefix_changes || []) {
+    const time = Date.parse(change.timestamp);
+    if (Number.isFinite(time)) {
+      items.push({ key: `ipv6_prefix:${change.timestamp}`, type: "ipv6_prefix", time, event: { details: change } });
+    }
   }
   return items.sort((left, right) => left.time - right.time);
 }
@@ -2278,9 +2333,9 @@ function renderConnectionTimeline() {
   internetLane.className = "timeline-lane timeline-lane--internet";
   for (const item of visible) {
     const type = TIMELINE_TYPES[item.type];
-    if (item.type === "outage") {
+    if (item.type === "outage" || item.type === "ipv6_outage") {
       const bar = document.createElement("span");
-      bar.className = "timeline-outage";
+      bar.className = item.type === "ipv6_outage" ? "timeline-outage timeline-outage--ipv6" : "timeline-outage";
       bar.dataset.key = item.key;
       bar.style.left = position(item.time);
       bar.style.width = `${((item.end - item.time) / (end - start)) * 100}%`;
@@ -2308,7 +2363,7 @@ function renderConnectionTimeline() {
 
   const selected =
     visible.find((item) => item.key === state.timelineSelectedKey) ||
-    [...visible].reverse().find((item) => item.type !== "outage") ||
+    [...visible].reverse().find((item) => item.type !== "outage" && item.type !== "ipv6_outage") ||
     visible[visible.length - 1] ||
     null;
   selectTimelineItem(selected?.key ?? null);
@@ -2549,6 +2604,15 @@ function timelineChips(item) {
           : chip("Not diagnosed", "muted"),
       ];
     }
+    case "ipv6_outage": {
+      const outage = item.outage;
+      return [
+        chip(outage.ongoing ? `${formatOutageDuration(outage.duration_seconds)} so far` : formatOutageDuration(outage.duration_seconds), "amber"),
+        chip("IPv4 stayed up", "muted"),
+      ];
+    }
+    case "ipv6_prefix":
+      return [chip(String(details.from ?? "?")), arrow(), chip(String(details.to ?? "?"))];
     case "restart":
       return [
         chip(`Up ${formatOutageDuration(details.previous_uptime_seconds)} before`),
