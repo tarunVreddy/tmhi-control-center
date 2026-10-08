@@ -1107,16 +1107,21 @@ def test_speed_test_schedule_and_manual_run(monkeypatch, tmp_path) -> None:
     assert "SPEEDTEST_RETENTION_DAYS=180\n" in saved_settings
 
 
-def test_events_endpoint_returns_at_most_ten_events(monkeypatch, tmp_path) -> None:
+def test_events_endpoint_defaults_to_ten_and_honors_larger_limits(monkeypatch, tmp_path) -> None:
     main = load_main(monkeypatch, tmp_path)
 
     with TestClient(main.app) as client:
         for index in range(12):
             client.post("/api/settings", json={"dry_run": True, "tests_per_hour": index + 1})
-        response = client.get("/api/events?limit=500")
+        default = client.get("/api/events")
+        larger = client.get("/api/events?limit=500")
+        too_large = client.get("/api/events?limit=501")
 
-    assert response.status_code == 200
-    assert len(response.json()) == 10
+    assert default.status_code == 200
+    assert len(default.json()) == 10
+    # The activity log asks for more than the default; every event comes back.
+    assert len(larger.json()) >= 12
+    assert too_large.status_code == 422
 
 
 def test_request_logs_hide_api_keys_and_location(monkeypatch, tmp_path) -> None:
