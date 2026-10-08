@@ -108,6 +108,16 @@ def test_root_icons_are_served_without_a_session(monkeypatch, tmp_path) -> None:
     assert not_an_icon.status_code in (401, 404)
     # The icons have transparent rounded corners, so they are not maskable.
     assert {icon["purpose"] for icon in manifest.json()["icons"]} == {"any"}
+    # iOS home-screen icons are 180x180; the manifest offers one at that size.
+    icons = {icon["sizes"]: icon["src"] for icon in manifest.json()["icons"]}
+    assert icons["180x180"] == "/static/apple-touch-icon.png"
+    assert manifest.json()["id"] == manifest.json()["scope"] == "/"
+    assert client_head_ok(main)
+
+
+def client_head_ok(main) -> bool:
+    with TestClient(main.app) as client:
+        return client.head("/apple-touch-icon.png").status_code == 200
 
 
 def test_saved_password_signs_in_without_asking_the_gateway(monkeypatch, tmp_path) -> None:
