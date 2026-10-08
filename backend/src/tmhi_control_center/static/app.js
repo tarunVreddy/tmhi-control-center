@@ -1,5 +1,13 @@
 const THEME_STORAGE_KEY = "tmhi-control-center-theme";
 const HIDE_PRIVACY_STORAGE_KEY = "tmhi-control-center-hide-privacy-ipv6";
+const ACTIVITY_LIMIT = 200;
+const ACTIVITY_FILTERS = [
+  ["all", "All"],
+  ["connection", "Connection"],
+  ["access", "Sign-ins"],
+  ["changes", "Changes"],
+  ["app", "App"],
+];
 const VIEW_STORAGE_KEY = "tmhi-control-center-view";
 const DEFAULT_VIEW = "dashboard";
 const AIM_POLL_INTERVAL_MS = 2000;
@@ -91,8 +99,7 @@ const state = {
   actionBusy: false,
   gatewayLoginBusy: false,
   snapshotBusy: false,
-  seriesRunning: false,
-  seriesAbort: false,
+  activityFilter: "all",
   maps: {
     preview: null,
     main: null,
@@ -148,6 +155,9 @@ const ids = [
   "dryRunToggle",
   "errorBanner",
   "eventsList",
+  "activityFilters",
+  "stabilityCheckButton",
+  "latestCheckLabel",
   "forceReboot",
   "forgetGatewayButton",
   "firmwareBackupButton",
@@ -221,11 +231,6 @@ const ids = [
   "saveOpenCellIdButton",
   "saveSettingsButton",
   "saveWifiButton",
-  "seriesCount",
-  "seriesInterval",
-  "seriesStartButton",
-  "seriesStopButton",
-  "seriesTableBody",
   "signalMeter",
   "signalMeterLabel",
   "signalMeterValue",
@@ -388,7 +393,6 @@ document.addEventListener("DOMContentLoaded", () => {
   activateView(window.localStorage.getItem(VIEW_STORAGE_KEY) || DEFAULT_VIEW, {
     refreshMap: false,
   });
-  selectTab("probes");
   refreshAll();
   window.setInterval(refreshLiveData, LIVE_POLL_INTERVAL_MS);
   // iOS resumes a home-screen app where it left off instead of reloading it,
@@ -418,6 +422,7 @@ document.addEventListener("DOMContentLoaded", () => {
 function bindControls() {
   els.refreshButton.addEventListener("click", () => refreshAll());
   els.checkButton.addEventListener("click", runCheck);
+  els.stabilityCheckButton.addEventListener("click", runCheck);
   els.gatewayButton.addEventListener("click", runGatewayTest);
   els.saveGatewayButton.addEventListener("click", saveGatewayLogin);
   els.forgetGatewayButton.addEventListener("click", clearGatewayLogin);
@@ -447,8 +452,6 @@ function bindControls() {
   els.speedTestCadence.addEventListener("change", renderSpeedTestSchedulePreview);
   els.speedTestProfile.addEventListener("change", renderSpeedTestSchedulePreview);
   els.rebootButton.addEventListener("click", requestReboot);
-  els.seriesStartButton.addEventListener("click", startSweep);
-  els.seriesStopButton.addEventListener("click", stopSweep);
   els.gatewayPassword.addEventListener("input", updateControlState);
   els.wifiSsid.addEventListener("input", updateControlState);
   els.openCellIdKey.addEventListener("input", updateControlState);
@@ -513,9 +516,6 @@ function bindControls() {
       openView(button.dataset.view);
     });
   });
-  document.querySelectorAll(".tab").forEach((button) => {
-    button.addEventListener("click", () => selectTab(button.dataset.tab));
-  });
   document.querySelectorAll("[data-telemetry-hours]").forEach((button) => {
     button.addEventListener("click", () => {
       const hours = Number(button.dataset.telemetryHours);
@@ -571,7 +571,8 @@ function setTheme(theme, { persist = false } = {}) {
 }
 
 function selectView(name) {
-  const requestedView = String(name || DEFAULT_VIEW);
+  // Diagnostics was folded into Stability; a saved choice still lands there.
+  const requestedView = name === "diagnostics" ? "stability" : String(name || DEFAULT_VIEW);
   const availableViews = new Set(
     Array.from(document.querySelectorAll("[data-view-panel]")).map((panel) => panel.dataset.viewPanel)
   );
@@ -627,7 +628,7 @@ async function refreshAll({ quiet = false } = {}) {
     api("/api/gateway/wifi"),
     api("/api/gateway/clients"),
     api("/api/gateway/map?include_nearby=false"),
-    api("/api/events?limit=10"),
+    api(`/api/events?limit=${ACTIVITY_LIMIT}`),
     api("/api/g4ar/firmware/backups"),
     api(`/api/gateway/telemetry/history?hours=${state.telemetryHours}`),
     api("/api/speedtest/status"),
@@ -725,8 +726,7 @@ async function refreshLiveData() {
     state.refreshing ||
     state.liveRefreshing ||
     state.actionBusy ||
-    state.mapBusy ||
-    state.seriesRunning
+    state.mapBusy
   ) {
     return;
   }
@@ -816,7 +816,7 @@ function reloadForUpdate() {
 }
 
 // A reload would lose whatever is in progress: typing, a running test or
-// sweep, a drag, or a live aiming session.
+// drag, or a live aiming session.
 function canReloadForUpdate() {
   const active = document.activeElement;
   const typing =
@@ -826,7 +826,6 @@ function canReloadForUpdate() {
     typing ||
     state.actionBusy ||
     state.speedTestBusy ||
-    state.seriesRunning ||
     state.timelineDragging ||
     state.mapBusy ||
     state.gatewayLoginBusy ||
@@ -1126,7 +1125,7 @@ function buildReadiness(setupSteps) {
   } else if (Number.isFinite(signalScore) && signalScore < 50) {
     summary = "Core setup is usable, but signal quality should be tuned before chasing firmware or tower changes.";
   } else if (score >= 85) {
-    summary = "The key setup pieces are in place. Use sweeps and snapshots to tune placement over time.";
+    summary = "The key setup pieces are in place. Use checks and snapshots to tune placement over time.";
   } else if (score >= 65) {
     summary = "The control center is usable. Finish the remaining setup items to make troubleshooting easier.";
   }
@@ -1135,7 +1134,7 @@ function buildReadiness(setupSteps) {
     score,
     label,
     summary,
-    next_best_action: next ? next.action : "Run a placement sweep and save the snapshot.",
+    next_best_action: next ? next.action : "Run a check after a placement change and save the snapshot.",
   };
 }
 
@@ -1294,9 +1293,9 @@ function buildSignalCoach() {
     tips.push(tip("n41 detected", "n41 can be excellent for download. If upload or latency is weak, compare placement and LTE-anchor behavior on owned lab hardware.", "info"));
   }
   if (state.mapData?.connected?.location) {
-    tips.push(tip("Serving tower is mapped", "Use the map line as an aiming baseline, then run a sweep after each antenna or placement change.", "good"));
+    tips.push(tip("Serving tower is mapped", "Use the map line as an aiming baseline, then run a check after each antenna or placement change.", "good"));
   }
-  tips.push(tip("Run repeatable sweeps", "Change one thing at a time, wait for the gateway to settle, then compare signal, ping, loss, and connected cell.", "info"));
+  tips.push(tip("Make repeatable changes", "Change one thing at a time, wait for the gateway to settle, then compare signal, ping, loss, and connected cell.", "info"));
   return tips.slice(0, 6);
 }
 
@@ -1337,7 +1336,7 @@ function buildHomelabCards() {
       actions: [
         "Save the map center.",
         "Refresh nearby towers.",
-        "Run sweeps after each antenna angle or gateway placement change.",
+        "Run a check after each antenna angle or gateway placement change.",
       ],
     },
     {
@@ -4261,6 +4260,13 @@ function setAimStatus(message, tone) {
 }
 
 function renderProbes() {
+  const checkedAt = state.status?.last_check_at;
+  setText(
+    els.latestCheckLabel,
+    checkedAt
+      ? `Checked ${formatRelative(Date.parse(checkedAt))} · runs automatically every ${state.config?.check_interval_seconds || 20} s`
+      : "Waiting for the first check"
+  );
   replaceChildren(els.probeTableBody);
   const probes = state.status?.last_probe_results || [];
   if (!probes.length) {
@@ -4280,14 +4286,55 @@ function renderProbes() {
   }
 }
 
+function eventCategory(kind) {
+  if (/^(dashboard_login|gateway_login)/.test(kind)) {
+    return "access";
+  }
+  if (/^reboot_|settings_updated$|^g4ar_/.test(kind)) {
+    return "changes";
+  }
+  if (/^(internet_|ipv6_|gateway_unreachable|gateway_restarted|connection_changed|registration_changed|firmware_changed)/.test(kind)) {
+    return "connection";
+  }
+  return "app";
+}
+
+function renderActivityFilters() {
+  const counts = { all: state.events.length };
+  for (const event of state.events) {
+    const category = eventCategory(event.kind || "");
+    counts[category] = (counts[category] || 0) + 1;
+  }
+  replaceChildren(els.activityFilters);
+  for (const [key, label] of ACTIVITY_FILTERS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `segment-button${state.activityFilter === key ? " is-active" : ""}`;
+    button.textContent = `${label} ${counts[key] || 0}`;
+    button.setAttribute("aria-pressed", String(state.activityFilter === key));
+    button.addEventListener("click", () => {
+      state.activityFilter = key;
+      renderEvents();
+    });
+    els.activityFilters.append(button);
+  }
+}
+
 function renderEvents() {
+  renderActivityFilters();
   replaceChildren(els.eventsList);
-  if (!state.events.length) {
-    els.eventsList.append(emptyNode("No events recorded yet."));
+  const events =
+    state.activityFilter === "all"
+      ? state.events
+      : state.events.filter((event) => eventCategory(event.kind || "") === state.activityFilter);
+  if (!events.length) {
+    els.eventsList.append(
+      emptyNode(state.events.length ? "No events of this kind in the latest entries." : "No events recorded yet.")
+    );
     return;
   }
 
-  for (const event of state.events) {
+  for (const event of events) {
     const item = document.createElement("article");
     item.className = "event-item";
 
@@ -4734,69 +4781,13 @@ async function requestReboot() {
   });
 }
 
-async function startSweep() {
-  if (state.seriesRunning) {
-    return;
-  }
-
-  const count = clamp(Number.parseInt(els.seriesCount.value, 10) || 1, 1, 30);
-  const intervalSeconds = clamp(Number.parseFloat(els.seriesInterval.value) || 0, 0, 300);
-  els.seriesCount.value = String(count);
-  els.seriesInterval.value = String(intervalSeconds);
-  replaceChildren(els.seriesTableBody);
-
-  state.seriesRunning = true;
-  state.seriesAbort = false;
-  updateControlState();
-  setActionMessage("Diagnostic sweep running.", "");
-
-  try {
-    for (let index = 1; index <= count; index += 1) {
-      if (state.seriesAbort) {
-        break;
-      }
-      state.status = await api("/api/check", { method: "POST" });
-      addSeriesRow(index, state.status);
-      await refreshGatewayAndEvents();
-      renderAll();
-      if (index < count && intervalSeconds > 0 && !state.seriesAbort) {
-        await sleep(intervalSeconds * 1000);
-      }
-    }
-    setActionMessage(state.seriesAbort ? "Diagnostic sweep stopped." : "Diagnostic sweep complete.", "success");
-  } catch (error) {
-    setActionMessage(error.message, "error");
-  } finally {
-    state.seriesRunning = false;
-    state.seriesAbort = false;
-    updateControlState();
-  }
-}
-
-function stopSweep() {
-  state.seriesAbort = true;
-  updateControlState();
-}
-
-function addSeriesRow(index, status) {
-  const row = document.createElement("tr");
-  row.append(
-    tableCell(String(index)),
-    tableCell(formatDate(status.last_check_at) || formatTime(new Date())),
-    tableCell(statusBadge(status.internet_online)),
-    tableCell(`${status.successful_probes || 0} / ${status.total_probes || 0}`),
-    tableCell(phaseText(status.phase) || "Unknown")
-  );
-  els.seriesTableBody.prepend(row);
-}
-
 async function refreshGatewayAndEvents() {
   const [overviewResult, wifiResult, clientsResult, mapResult, eventsResult] = await Promise.allSettled([
     api("/api/gateway/overview"),
     api("/api/gateway/wifi"),
     api("/api/gateway/clients"),
     api("/api/gateway/map?include_nearby=false"),
-    api("/api/events?limit=10"),
+    api(`/api/events?limit=${ACTIVITY_LIMIT}`),
   ]);
   if (overviewResult.status === "fulfilled") {
     state.overview = overviewResult.value;
@@ -4818,7 +4809,7 @@ async function refreshGatewayAndEvents() {
       `/api/gateway/telemetry/history?hours=${state.telemetryHours}`
     );
   } catch {
-    // A diagnostic sweep can continue even if chart history is temporarily unavailable.
+    // A check can still finish even if chart history is temporarily unavailable.
   }
 }
 
@@ -4845,8 +4836,7 @@ function updateControlState() {
     state.mapBusy ||
     state.gatewayLoginBusy ||
     state.snapshotBusy ||
-    state.speedTestBusy ||
-    state.seriesRunning;
+    state.speedTestBusy;
   const hasPassword = Boolean(els.gatewayPassword.value);
   const configured = Boolean(state.config?.gateway_password_configured);
   const openCellIdConfigured = Boolean(state.config?.map?.opencellid_configured);
@@ -4873,6 +4863,7 @@ function updateControlState() {
   els.refreshClientsButton.disabled = busy || !configured;
   els.lookupClientsButton.disabled = busy || !configured;
   els.checkButton.disabled = busy;
+  els.stabilityCheckButton.disabled = busy;
   els.gatewayButton.disabled = busy || (!configured && !hasPassword);
   els.saveGatewayButton.disabled = busy || !hasPassword;
   els.forgetGatewayButton.disabled = busy || !configured;
@@ -4923,10 +4914,6 @@ function updateControlState() {
   els.rootAssessButton.disabled =
     busy || !g4arLabEnabled || !els.advancedModemAcknowledge.checked;
   els.forceReboot.disabled = busy;
-  els.seriesStartButton.disabled = busy;
-  els.seriesStopButton.disabled = !state.seriesRunning;
-  els.seriesCount.disabled = busy;
-  els.seriesInterval.disabled = busy;
   els.mapRefreshButton.disabled = busy;
   els.useBrowserLocationButton.disabled = busy;
   els.useGatewayLocationButton.disabled = busy;
@@ -4942,15 +4929,6 @@ function updateControlState() {
   els.mapRadius.disabled = busy;
   els.openCellIdKey.disabled = busy;
   els.darkModeToggle.disabled = false;
-}
-
-function selectTab(name) {
-  document.querySelectorAll(".tab").forEach((button) => {
-    button.classList.toggle("is-active", button.dataset.tab === name);
-  });
-  document.querySelectorAll(".tab-panel").forEach((panel) => {
-    panel.classList.toggle("is-active", panel.id === `tab-${name}`);
-  });
 }
 
 function setActionMessage(message, tone) {

@@ -138,31 +138,6 @@ class Watchdog:
             )
             return await self.status_snapshot()
 
-    async def check_series(
-        self, *, count: int, interval_seconds: float
-    ) -> dict[str, Any]:
-        if count < 1:
-            raise ValueError("count must be at least 1")
-        if interval_seconds < 0:
-            raise ValueError("interval_seconds must be at least 0")
-
-        started_at = utc_now()
-        results: list[dict[str, Any]] = []
-        for index in range(count):
-            snapshot = await self.check_once(allow_reboot=False)
-            results.append({"index": index + 1, "status": snapshot})
-            if index < count - 1 and interval_seconds > 0:
-                await asyncio.sleep(interval_seconds)
-
-        return {
-            "started_at": started_at.isoformat(),
-            "finished_at": utc_now().isoformat(),
-            "requested_count": count,
-            "completed_count": len(results),
-            "interval_seconds": interval_seconds,
-            "results": results,
-        }
-
     async def _apply_connectivity_result(
         self,
         result: ConnectivityResult,
