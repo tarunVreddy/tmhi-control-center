@@ -47,6 +47,9 @@ IDENTIFIER_KEY_FRAGMENTS = (
     "bssid",
 )
 VENDOR_LOOKUP_INTERVAL_SECONDS = 1.1
+# Anything shaped like an IPv6 address or prefix; each match is confirmed with
+# ipaddress before it is redacted, so times and masked MACs are left alone.
+IPV6_CANDIDATE_PATTERN = re.compile(r"[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:/\d{1,3})?")
 IPV6_LIST_KEYS = frozenset({"ipv6", "ipv6address", "ipv6addresses", "ip6", "ipv6list"})
 
 SIGNAL_METRICS: tuple[dict[str, Any], ...] = (
@@ -2257,7 +2260,20 @@ def redact_for_sharing(value: Any, *, key: str = "") -> Any:
         # Only MAC-named keys: a 15-digit IMEI also contains 12 hex digits.
         mac = _normalize_mac(str(value)) if _key_matches(key, ("mac", "bssid")) else None
         return _mask_mac(mac) if mac else _mask_identifier(value)
+    if isinstance(value, str):
+        # Addresses also turn up in event messages and in details such as a
+        # sign-in's client address, under keys that say nothing about IPv6.
+        return IPV6_CANDIDATE_PATTERN.sub(_redact_ipv6_match, value)
     return value
+
+
+def _redact_ipv6_match(match: re.Match[str]) -> str:
+    text = match.group(0)
+    try:
+        ipaddress.IPv6Network(text, strict=False)
+    except ValueError:
+        return text
+    return "[redacted]"
 
 
 def _key_matches(key: str, fragments: tuple[str, ...]) -> bool:

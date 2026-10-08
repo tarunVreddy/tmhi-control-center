@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-MAX_RECENT_EVENTS = 10
+DEFAULT_RECENT_EVENTS = 10
+# The Stability tab's activity log asks for a few hundred; matches the API's cap.
+MAX_RECENT_EVENTS = 500
 TELEMETRY_RETENTION_DAYS = 14
 MAX_TELEMETRY_POINTS = 2000
 MIN_SPEED_TEST_RETENTION_DAYS = 30
@@ -232,7 +234,7 @@ class EventStore:
         async with self._lock:
             await asyncio.to_thread(_set)
 
-    async def recent(self, limit: int = MAX_RECENT_EVENTS) -> list[dict[str, Any]]:
+    async def recent(self, limit: int = DEFAULT_RECENT_EVENTS) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, MAX_RECENT_EVENTS))
 
         def _recent() -> list[dict[str, Any]]:

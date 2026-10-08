@@ -779,6 +779,30 @@ def test_redact_for_sharing_masks_identifiers_but_keeps_flags() -> None:
     assert redacted["nested"][0]["bssid"] == "11:22:33:xx:xx:xx"
 
 
+def test_redact_for_sharing_scrubs_ipv6_inside_any_text() -> None:
+    from tmhi_control_center.gateway import redact_for_sharing
+
+    redacted = redact_for_sharing(
+        {
+            "events": [
+                {
+                    "message": "Public IPv6 prefix changed from 2001:db8:a:1::/64 to 2001:db8:b:2::/64",
+                    "details": {"client": "2001:db8:a:1::99", "public_prefix": "2001:db8:b:2::/64"},
+                },
+                {"message": "Checked at 12:34:56", "details": {"client": "192.168.12.50"}},
+            ],
+            "mac_note": "AA:BB:CC:xx:xx:xx",
+        }
+    )
+
+    first, second = redacted["events"]
+    assert first["message"] == "Public IPv6 prefix changed from [redacted] to [redacted]"
+    assert first["details"] == {"client": "[redacted]", "public_prefix": "[redacted]"}
+    # Not IPv6: times and IPv4 addresses pass through.
+    assert second["message"] == "Checked at 12:34:56"
+    assert second["details"]["client"] == "192.168.12.50"
+
+
 @pytest.mark.asyncio
 async def test_vendor_lookup_spaces_requests_and_skips_random_macs(monkeypatch) -> None:
     import tmhi_control_center.gateway as gateway_module
