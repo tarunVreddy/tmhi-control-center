@@ -2518,7 +2518,55 @@ table {
 }
 
 .clients-table {
-  min-width: 840px;
+  min-width: 1080px;
+}
+
+.client-row--reached td:first-child {
+  padding-left: 24px;
+}
+
+.ipv6-list {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ipv6-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.ipv6-list code {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ipv6-list small,
+.ipv6-list__hidden {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.clients-table summary {
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.clients-table details[open] summary {
+  margin-bottom: 6px;
+}
+
+.inline-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-weight: 750;
 }
 
 th,

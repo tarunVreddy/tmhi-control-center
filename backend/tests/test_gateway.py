@@ -187,8 +187,9 @@ async def test_gateway_overview_normalizes_signal_and_redacts_private_fields() -
     }
     rendered = str(overview)
     assert "super-secret" not in rendered
-    assert "SN123456" not in rendered
     assert "[redacted]" in rendered
+    # Identifiers are for the signed-in owner; only sharing masks them.
+    assert "SN123456" in rendered
 
 
 @pytest.mark.asyncio
@@ -347,13 +348,13 @@ async def test_connected_devices_extracts_and_identifies_clients() -> None:
 
     assert clients["count"] == 2
     iphone = clients["devices"][0]
-    assert iphone["mac_address"] == "AA:BB:CC:xx:xx:xx"
+    assert iphone["mac_address"] == "AA:BB:CC:11:22:33"
     assert iphone["mac_oui"] == "AA:BB:CC"
     assert iphone["vendor"] == "Apple"
     assert iphone["identification"]["name"] == "Apple iPhone 16 Pro"
     assert iphone["identification"]["method"] == "hostname_pattern"
-    rendered = str(clients)
-    assert "AA:BB:CC:11:22:33" not in rendered
+    assert iphone["ipv6_addresses"] == []
+    assert clients["reached_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -612,7 +613,7 @@ async def test_non_standalone_5g_identity_is_flagged_as_the_lte_anchor() -> None
 
 
 @pytest.mark.asyncio
-async def test_device_details_masks_sim_and_serial_identifiers() -> None:
+async def test_device_details_returns_sim_and_serial_identifiers() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/gateway/"):
@@ -649,17 +650,125 @@ async def test_device_details_masks_sim_and_serial_identifiers() -> None:
         await client.close()
 
     assert details["device"]["firmware"] == "1.00.06"
-    assert details["device"]["serial"] == "•••• 1E82"
+    assert details["device"]["serial"].endswith("1E82")
+    assert "•" not in details["device"]["serial"]
     assert details["device"]["api_version"] == "3.1"
     assert details["sim"] == {
         "status": "Active",
-        "iccid": "•••• 9012",
-        "imei": "•••• 0154",
-        "imsi": "•••• 6758",
-        "phone_number": "•••• 0185",
+        "iccid": "8901260123456789012",
+        "imei": "351234567890154",
+        "imsi": "310260123456758",
+        "phone_number": "13035550185",
     }
-    serialized = str(details)
-    for secret in ("8901260123456789012", "351234567890154", "13035550185", "XX00Z1E82"):
-        assert secret not in serialized
     assert details["network"] == {"apn": "FBB.HOME", "registration": "registered", "ipv6": True}
     assert details["clock"]["timezone"] == "-06:00"
+
+
+def test_ipv6_addresses_are_classified_and_split_by_embedded_mac() -> None:
+    from tmhi_control_center.gateway import _connected_devices_from_payload
+
+    router_mac = "1C:0B:8B:00:00:01"
+    behind = [
+        # Two addresses from one Proxmox VM (EUI-64 of BC:24:11:00:00:02).
+        "2001:db8:a:1:be24:11ff:fe00:2",
+        "fd12:3456:789a:1:be24:11ff:fe00:2",
+        # A Nest device (18:B4:30:00:00:03).
+        "2001:db8:a:1:1ab4:30ff:fe00:3",
+        # The router's own EUI-64 address stays on its row.
+        "2001:db8:a:1:1e0b:8bff:fe00:1",
+    ]
+    privacy = [f"2001:db8:a:1:{n:x}:1111:2222:3333" for n in range(1, 13)]
+    payload = {
+        "clients": {
+            "ethernet": [
+                {"ipv4": "192.168.12.221", "mac": router_mac, "ipv6": behind + privacy},
+                # Listed by the gateway in its own right: its EUI-64 address
+                # appearing on the router entry must move to it, not spawn a row.
+                {"ipv4": "192.168.12.50", "mac": "AA:BB:CC:11:22:33", "ipv6": []},
+            ]
+        }
+    }
+    payload["clients"]["ethernet"][0]["ipv6"].append("2001:db8:a:1:a8bb:ccff:fe11:2233")
+
+    devices = _connected_devices_from_payload(payload)
+    by_mac = {device["mac_address"]: device for device in devices}
+
+    router = by_mac[router_mac]
+    own = [entry["address"] for entry in router["ipv6_addresses"]]
+    # More than the dozen that flattened leaves would have kept.
+    assert len(own) == 13
+    assert "2001:db8:a:1:1e0b:8bff:fe00:1" in own
+    assert all(entry["kind"] == "random" for entry in router["ipv6_addresses"][1:])
+    assert router.get("reached_through") is None
+
+    vm = by_mac["BC:24:11:00:00:02"]
+    assert vm["reached_through"]["ip_address"] == "192.168.12.221"
+    assert vm["ip_address"] is None
+    assert vm["mac_oui"] == "BC:24:11"
+    assert [(entry["scope"], entry["kind"]) for entry in vm["ipv6_addresses"]] == [
+        ("global", "eui64"),
+        ("unique-local", "eui64"),
+    ]
+    assert by_mac["18:B4:30:00:00:03"]["reached_through"]["mac_address"] == router_mac
+
+    listed = by_mac["AA:BB:CC:11:22:33"]
+    assert listed.get("reached_through") is None
+    assert [entry["address"] for entry in listed["ipv6_addresses"]] == [
+        "2001:db8:a:1:a8bb:ccff:fe11:2233"
+    ]
+    # Children follow their parent entry.
+    order = [device["mac_address"] for device in devices]
+    assert order.index("BC:24:11:00:00:02") == order.index(router_mac) + 1
+    assert len(devices) == 4
+
+
+def test_directly_connected_clients_keep_their_own_addresses() -> None:
+    from tmhi_control_center.gateway import _connected_devices_from_payload
+
+    devices = _connected_devices_from_payload(
+        {
+            "clients": {
+                "wifi": [
+                    {
+                        "ipv4": "192.168.12.60",
+                        "mac": "BC:24:11:00:00:02",
+                        "ipv6": "2001:db8:a:1:be24:11ff:fe00:2, fe80::be24:11ff:fe00:2",
+                    }
+                ]
+            }
+        }
+    )
+
+    assert len(devices) == 1
+    assert [entry["scope"] for entry in devices[0]["ipv6_addresses"]] == ["global", "link-local"]
+
+
+def test_redact_for_sharing_masks_identifiers_but_keeps_flags() -> None:
+    from tmhi_control_center.gateway import redact_for_sharing
+
+    redacted = redact_for_sharing(
+        {
+            "imei": "351234567890154",
+            "phone_number": "13035550185",
+            "mac_address": "AA:BB:CC:11:22:33",
+            "mac_oui": "AA:BB:CC",
+            "wifi_password": "hunter2",
+            "gateway_password_configured": True,
+            "has_ipv6": True,
+            "wan_ipv6": "2001:db8::1",
+            "ipv6_addresses": [{"address": "2001:db8::2"}],
+            "nested": [{"bssid": "11:22:33:44:55:66"}],
+        }
+    )
+
+    # A 15-digit IMEI contains 12 hex digits but is not a MAC.
+    assert redacted["imei"] == "•••• 0154"
+    assert redacted["phone_number"] == "•••• 0185"
+    assert redacted["mac_address"] == "AA:BB:CC:xx:xx:xx"
+    assert redacted["mac_oui"] == "AA:BB:CC"
+    assert redacted["wifi_password"] == "[redacted]"
+    assert redacted["gateway_password_configured"] is True
+    assert redacted["has_ipv6"] is True
+    assert redacted["wan_ipv6"] == "[redacted]"
+    assert redacted["ipv6_addresses"] == "[redacted]"
+    assert redacted["nested"][0]["bssid"] == "11:22:33:xx:xx:xx"
