@@ -124,6 +124,7 @@ class Settings:
     database_path: str = "/data/control-center.db"
     session_key_path: str = field(default="/data/session.key", repr=False)
     dashboard_auth_enabled: bool = True
+    ipv6_check_enabled: bool = True
     cors_origins: tuple[str, ...] = ()
     log_level: str = "INFO"
 
@@ -336,6 +337,7 @@ class Settings:
             database_path=database_path,
             session_key_path=str(Path(database_path).with_name("session.key")),
             dashboard_auth_enabled=_bool(managed_values, "DASHBOARD_AUTH_ENABLED", True),
+            ipv6_check_enabled=_bool(managed_values, "IPV6_CHECK_ENABLED", True),
             cors_origins=cors_origins,
             log_level=_env(managed_values, "LOG_LEVEL", "INFO").upper(),
         )

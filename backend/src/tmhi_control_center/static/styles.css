@@ -998,6 +998,18 @@ summary:focus-visible {
   border-top-color: var(--blue);
 }
 
+.stability-summary-grid.has-ipv6 {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.stability-summary-grid .ipv6-summary-item {
+  border-top-color: var(--amber);
+}
+
+.ipv6-summary-item strong.is-bad {
+  color: var(--red);
+}
+
 .stability-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1286,6 +1298,10 @@ summary:focus-visible {
   border-radius: 2px;
   background: var(--red);
   cursor: pointer;
+}
+
+.timeline-outage--ipv6 {
+  background: var(--amber);
 }
 
 .timeline-outage.is-selected {
@@ -2985,6 +3001,14 @@ th {
 
   .speed-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stability-summary-grid.has-ipv6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stability-summary-grid .ipv6-summary-item {
+    grid-column: 1 / -1;
   }
 
   .topbar {
