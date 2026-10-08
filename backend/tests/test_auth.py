@@ -78,6 +78,10 @@ def test_signed_out_browser_gets_sign_in_page_and_401s(monkeypatch, tmp_path) ->
     assert page.status_code == 200
     assert 'id="signinForm"' in page.text
     assert "tmhi-build" not in page.text
+    # The sign-in page is what iOS fetches without cookies; its icon URL is
+    # fingerprinted like the dashboard's.
+    assert "/static/apple-touch-icon.png?v=dev" not in page.text
+    assert "/static/apple-touch-icon.png?v=" in page.text
     assert page.headers["cache-control"] == "no-store"
     # A cached dashboard must not be revalidated for a signed-out browser.
     assert stale.status_code == 200
