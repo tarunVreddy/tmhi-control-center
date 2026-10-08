@@ -177,7 +177,9 @@ telemetry_task: asyncio.Task[None] | None = None
 ipv6_monitor = Ipv6Monitor(store, internet_online=lambda: watchdog.state.internet_online)
 ipv6_task: asyncio.Task[None] | None = None
 STATIC_DIR = Path(__file__).parent / "static"
-FINGERPRINTED_ASSETS = ("app.js", "styles.css")
+# The touch icon and manifest are included so a changed icon gets a new URL:
+# iOS caches home-screen icons by URL, beyond the reach of clearing Safari data.
+FINGERPRINTED_ASSETS = ("app.js", "styles.css", "apple-touch-icon.png", "site.webmanifest")
 
 
 def _fingerprint_assets(html: str) -> tuple[str, list[str]]:
