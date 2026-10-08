@@ -78,13 +78,6 @@ def test_signed_out_browser_gets_sign_in_page_and_401s(monkeypatch, tmp_path) ->
     assert page.status_code == 200
     assert 'id="signinForm"' in page.text
     assert "tmhi-build" not in page.text
-    # The sign-in page is what iOS fetches without cookies; its icon URL is
-    # fingerprinted like the dashboard's.
-    assert "/static/apple-touch-icon.png?v=dev" not in page.text
-    assert "/static/apple-touch-icon.png?v=" in page.text
-    # sizes="any" claims a scalable (SVG) icon; this .ico is a single 16x16
-    # image, and iOS took it for the home screen and fell back to a letter.
-    assert 'sizes="any"' not in page.text
     assert page.headers["cache-control"] == "no-store"
     # A cached dashboard must not be revalidated for a signed-out browser.
     assert stale.status_code == 200
@@ -95,36 +88,6 @@ def test_signed_out_browser_gets_sign_in_page_and_401s(monkeypatch, tmp_path) ->
     assert health.status_code == 200
     assert version.status_code == 200
     assert stylesheet.status_code == 200
-
-
-def test_root_icons_are_served_without_a_session(monkeypatch, tmp_path) -> None:
-    main = load_main(monkeypatch, tmp_path, saved_password=GATEWAY_PASSWORD)
-
-    with TestClient(main.app) as client:
-        touch = client.get("/apple-touch-icon.png")
-        sized = client.get("/apple-touch-icon-180x180-precomposed.png")
-        favicon = client.get("/favicon.ico")
-        not_an_icon = client.get("/apple-touch-icon-evil/../../api/status")
-        manifest = client.get("/static/site.webmanifest")
-
-    for response in (touch, sized):
-        assert response.status_code == 200
-        assert response.headers["content-type"] == "image/png"
-        assert response.content == (main.STATIC_DIR / "apple-touch-icon.png").read_bytes()
-    assert favicon.status_code == 200
-    assert not_an_icon.status_code in (401, 404)
-    # The icons have transparent rounded corners, so they are not maskable.
-    assert {icon["purpose"] for icon in manifest.json()["icons"]} == {"any"}
-    # iOS home-screen icons are 180x180; the manifest offers one at that size.
-    icons = {icon["sizes"]: icon["src"] for icon in manifest.json()["icons"]}
-    assert icons["180x180"] == "/static/apple-touch-icon.png"
-    assert manifest.json()["id"] == manifest.json()["scope"] == "/"
-    assert client_head_ok(main)
-
-
-def client_head_ok(main) -> bool:
-    with TestClient(main.app) as client:
-        return client.head("/apple-touch-icon.png").status_code == 200
 
 
 def test_saved_password_signs_in_without_asking_the_gateway(monkeypatch, tmp_path) -> None:

@@ -58,7 +58,7 @@ def test_dashboard_carries_its_build_and_is_revalidated(monkeypatch, tmp_path) -
     assert again.status_code == 304
 
     # Each asset URL carries a hash of that file, never a hand-set tag.
-    for name in ("app.js", "styles.css", "apple-touch-icon.png", "site.webmanifest"):
+    for name in ("app.js", "styles.css"):
         expected = hashlib.sha256((main.STATIC_DIR / name).read_bytes()).hexdigest()[:12]
         assert f"/static/{name}?v={expected}" in page.text
     assert "?v=dev" not in page.text

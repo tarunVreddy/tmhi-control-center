@@ -177,9 +177,7 @@ telemetry_task: asyncio.Task[None] | None = None
 ipv6_monitor = Ipv6Monitor(store, internet_online=lambda: watchdog.state.internet_online)
 ipv6_task: asyncio.Task[None] | None = None
 STATIC_DIR = Path(__file__).parent / "static"
-# The touch icon and manifest are included so a changed icon gets a new URL:
-# iOS caches home-screen icons by URL, beyond the reach of clearing Safari data.
-FINGERPRINTED_ASSETS = ("app.js", "styles.css", "apple-touch-icon.png", "site.webmanifest")
+FINGERPRINTED_ASSETS = ("app.js", "styles.css")
 
 
 def _fingerprint_assets(html: str) -> tuple[str, list[str]]:
@@ -562,20 +560,6 @@ async def _gateway_accepts(password: str, *, password_configured: bool) -> bool:
         ) from exc
     finally:
         await candidate.close()
-
-
-@app.api_route("/favicon.ico", methods=["GET", "HEAD"], include_in_schema=False)
-async def root_favicon() -> FileResponse:
-    return FileResponse(STATIC_DIR / "favicon.ico", media_type="image/x-icon")
-
-
-@app.api_route("/apple-touch-icon{variant:path}", methods=["GET", "HEAD"], include_in_schema=False)
-async def root_touch_icon(variant: str) -> FileResponse:
-    # iOS asks for sized and precomposed variants it never links to; one icon
-    # serves them all, and anything else under this name is not ours.
-    if not variant.endswith(".png") or "/" in variant:
-        raise HTTPException(status_code=404)
-    return FileResponse(STATIC_DIR / "apple-touch-icon.png", media_type="image/png")
 
 
 @app.get("/api/version")
