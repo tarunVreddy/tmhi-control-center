@@ -17,10 +17,8 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 3600
 # Paths anyone can reach. The dashboard route picks between the page and the
 # sign-in form itself, the health check is Docker's, and the version endpoint
 # lets an open page notice a deploy even after its session has lapsed.
-PUBLIC_PATHS = frozenset({"/", "/healthz", "/api/version", "/api/auth/login", "/favicon.ico"})
-# Browsers and iOS look for icons at the site root before reading the page's
-# links, without cookies: /apple-touch-icon.png, -precomposed, -180x180 and so on.
-PUBLIC_PREFIXES = ("/static/", "/apple-touch-icon")
+PUBLIC_PATHS = frozenset({"/", "/healthz", "/api/version", "/api/auth/login"})
+PUBLIC_PREFIXES = ("/static/",)
 
 
 class SessionSigner:

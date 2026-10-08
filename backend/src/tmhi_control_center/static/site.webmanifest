@@ -1,31 +1,23 @@
 {
-  "id": "/",
   "name": "TMHI Control Center",
   "short_name": "TMHI Center",
   "description": "Local dashboard and control center for supported T-Mobile Home Internet gateways.",
   "start_url": "/",
-  "scope": "/",
   "display": "standalone",
   "background_color": "#0d1118",
   "theme_color": "#111722",
   "icons": [
     {
-      "src": "/static/apple-touch-icon.png",
-      "sizes": "180x180",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
       "src": "/static/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     },
     {
       "src": "/static/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }
