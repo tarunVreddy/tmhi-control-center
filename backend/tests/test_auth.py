@@ -82,6 +82,9 @@ def test_signed_out_browser_gets_sign_in_page_and_401s(monkeypatch, tmp_path) ->
     # fingerprinted like the dashboard's.
     assert "/static/apple-touch-icon.png?v=dev" not in page.text
     assert "/static/apple-touch-icon.png?v=" in page.text
+    # sizes="any" claims a scalable (SVG) icon; this .ico is a single 16x16
+    # image, and iOS took it for the home screen and fell back to a letter.
+    assert 'sizes="any"' not in page.text
     assert page.headers["cache-control"] == "no-store"
     # A cached dashboard must not be revalidated for a signed-out browser.
     assert stale.status_code == 200
