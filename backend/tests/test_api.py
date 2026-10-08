@@ -187,7 +187,7 @@ def test_homelab_snapshot_includes_readiness_and_docker_lab_guide(
                         {"key": "sinr", "label": "SINR", "score": 80, "value": "18 dB"},
                     ],
                 },
-                "device": {"model": "TMO-G4AR"},
+                "device": {"model": "TMO-G4AR", "serial": "XX00Z1E82", "macId": "18:60:41:00:00:05"},
                 "connection": {
                     "network_type": "5G",
                     "band": "n41",
@@ -203,7 +203,17 @@ def test_homelab_snapshot_includes_readiness_and_docker_lab_guide(
         async def connected_devices(self, *, online_vendor_lookup: bool = False):
             return {
                 "count": 1,
-                "devices": [{"hostname": "nas", "ip_address": "192.168.12.20"}],
+                "devices": [
+                    {
+                        "hostname": "nas",
+                        "ip_address": "192.168.12.20",
+                        "mac_address": "AA:BB:CC:11:22:33",
+                        "mac_oui": "AA:BB:CC",
+                        "ipv6_addresses": [
+                            {"address": "2001:db8:a:1::20", "mac": None},
+                        ],
+                    }
+                ],
             }
 
         async def close(self) -> None:
@@ -229,6 +239,14 @@ def test_homelab_snapshot_includes_readiness_and_docker_lab_guide(
     assert "not a raw eMMC" in docker_lab["safety"][0]
     assert payload["config"]["gateway_password_configured"] is False
     assert payload["clients"]["count"] == 1
+    # The export is for sharing, so it masks what the dashboard shows in full.
+    nas = payload["clients"]["devices"][0]
+    assert nas["mac_address"] == "AA:BB:CC:xx:xx:xx"
+    assert nas["mac_oui"] == "AA:BB:CC"
+    assert nas["ipv6_addresses"] == "[redacted]"
+    assert payload["overview"]["device"]["serial"] == "•••• 1E82"
+    assert payload["overview"]["device"]["macId"] == "18:60:41:xx:xx:xx"
+    assert "2001:db8" not in response.text
 
 
 def test_gateway_map_endpoint_reports_tower_identity(monkeypatch, tmp_path) -> None:

@@ -1,4 +1,5 @@
 const THEME_STORAGE_KEY = "tmhi-control-center-theme";
+const HIDE_PRIVACY_STORAGE_KEY = "tmhi-control-center-hide-privacy-ipv6";
 const VIEW_STORAGE_KEY = "tmhi-control-center-view";
 const DEFAULT_VIEW = "dashboard";
 const AIM_POLL_INTERVAL_MS = 2000;
@@ -124,6 +125,7 @@ const ids = [
   "checkButton",
   "clearOpenCellIdButton",
   "clientCountTag",
+  "hidePrivacyAddresses",
   "clientTableBody",
   "connectedDetail",
   "connectionChangeCount",
@@ -425,6 +427,11 @@ function bindControls() {
   els.saveOpenCellIdButton.addEventListener("click", saveOpenCellIdKey);
   els.clearOpenCellIdButton.addEventListener("click", clearOpenCellIdKey);
   els.refreshClientsButton.addEventListener("click", () => refreshClients(false));
+  els.hidePrivacyAddresses.checked = readStoredFlag(HIDE_PRIVACY_STORAGE_KEY);
+  els.hidePrivacyAddresses.addEventListener("change", () => {
+    writeStoredFlag(HIDE_PRIVACY_STORAGE_KEY, els.hidePrivacyAddresses.checked);
+    renderClients();
+  });
   els.lookupClientsButton.addEventListener("click", () => refreshClients(true));
   els.saveAdvancedModemButton.addEventListener("click", saveAdvancedModemSettings);
   els.firmwareBackupButton.addEventListener("click", createG4ARFirmwareBackup);
@@ -3251,26 +3258,110 @@ function renderWifiControls() {
 function renderClients() {
   const devices = state.clients?.devices || [];
   const count = state.clients?.count ?? devices.length;
-  setTag(els.clientCountTag, `${count} ${count === 1 ? "device" : "devices"}`, count ? "info" : "muted");
+  const reached = state.clients?.reached_count || 0;
+  setTag(
+    els.clientCountTag,
+    `${count} ${count === 1 ? "device" : "devices"}${reached ? ` + ${reached} via IPv6` : ""}`,
+    count ? "info" : "muted"
+  );
   replaceChildren(els.clientTableBody);
 
   if (!devices.length) {
-    addEmptyTableRow(els.clientTableBody, 6, clientsEmptyText());
+    addEmptyTableRow(els.clientTableBody, 7, clientsEmptyText());
     return;
   }
 
+  const hidePrivacy = els.hidePrivacyAddresses.checked;
   for (const device of devices) {
     const identification = device.identification || {};
+    const through = device.reached_through;
+    const name = device.hostname || identification.name || "Unknown device";
     const row = document.createElement("tr");
+    if (through) {
+      row.className = "client-row--reached";
+    }
     row.append(
-      tableCell(device.hostname || identification.name || "Unknown device"),
-      tableCell(device.ip_address || "Unknown"),
-      tableCell(device.mac_address || "Hidden"),
-      tableCell(compactJoin([device.interface, device.band || device.ssid], " / ") || "Unknown"),
+      tableCell(through ? reachedNameNode(name, through) : name),
+      tableCell(device.ip_address || (through ? "—" : "Unknown")),
+      tableCell(ipv6ListNode(device.ipv6_addresses || [], hidePrivacy)),
+      tableCell(device.mac_address || "Unknown"),
+      tableCell(
+        compactJoin([device.interface, device.band || device.ssid], " / ") ||
+          (through ? "Through another device" : "Unknown")
+      ),
       tableCell(device.vendor || "Unknown"),
       tableCell(deviceGuessNode(identification))
     );
     els.clientTableBody.append(row);
+  }
+}
+
+// A device found only because one of its EUI-64 addresses showed up on another
+// gateway entry: name it, and say which entry it was seen through.
+function reachedNameNode(name, through) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "device-guess";
+  const label = document.createElement("strong");
+  label.textContent = name;
+  const note = document.createElement("small");
+  note.textContent = `Reached through ${through.hostname || through.ip_address || through.mac_address || "another device"}`;
+  wrapper.append(label, note);
+  return wrapper;
+}
+
+function ipv6ListNode(addresses, hidePrivacy) {
+  const shown = addresses
+    .filter((entry) => !(hidePrivacy && entry.kind === "random"))
+    .sort((a, b) => (a.kind === "random") - (b.kind === "random"));
+  const hidden = addresses.length - shown.length;
+  if (!shown.length) {
+    return document.createTextNode(hidden ? `${hidden} privacy hidden` : "—");
+  }
+
+  const list = document.createElement("ul");
+  list.className = "ipv6-list";
+  for (const entry of shown) {
+    const item = document.createElement("li");
+    const code = document.createElement("code");
+    code.textContent = entry.address;
+    item.append(code);
+    const label = entry.kind === "random" ? "privacy" : entry.scope === "unique-local" ? "ULA" : "";
+    if (label) {
+      const tag = document.createElement("small");
+      tag.textContent = label;
+      item.append(tag);
+    }
+    list.append(item);
+  }
+  if (hidden) {
+    const item = document.createElement("li");
+    item.className = "ipv6-list__hidden";
+    item.textContent = `${hidden} privacy hidden`;
+    list.append(item);
+  }
+  if (shown.length <= 3) {
+    return list;
+  }
+  const details = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = `${shown.length} addresses`;
+  details.append(summary, list);
+  return details;
+}
+
+function readStoredFlag(key) {
+  try {
+    return window.localStorage.getItem(key) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredFlag(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    // Private windows can refuse storage; the toggle still works for this visit.
   }
 }
 

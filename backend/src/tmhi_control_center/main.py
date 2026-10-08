@@ -50,7 +50,12 @@ from .firmware_backup import (
     get_g4ar_backup_archive,
     list_g4ar_firmware_backups,
 )
-from .gateway import GatewayAuthenticationError, GatewayError, UnifiedGatewayClient
+from .gateway import (
+    GatewayAuthenticationError,
+    GatewayError,
+    UnifiedGatewayClient,
+    redact_for_sharing,
+)
 from .geolocation import PublicIpLocationError, PublicIpLocator
 from .g4ar_root import assess_g4ar_root_readiness, g4ar_root_research_status
 from .insights import build_homelab_insights
@@ -593,7 +598,9 @@ async def homelab_snapshot(
         events=events_payload,
         firmware_backups=firmware_backups,
     )
-    return {
+    # The dashboard shows identifiers in full to the signed-in owner; this
+    # export is meant to be shared, so it masks them.
+    return redact_for_sharing({
         "generated_at": map_payload.get("observed_at"),
         "version": __version__,
         "config": safe_config,
@@ -605,7 +612,7 @@ async def homelab_snapshot(
         "events": events_payload,
         "firmware_backups": firmware_backups,
         "insights": insights,
-    }
+    })
 
 
 @app.get("/api/gateway/overview")

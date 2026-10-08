@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from copy import deepcopy
@@ -15,7 +16,8 @@ from .models import GatewayDetection, RebootResult, utc_now
 
 logger = logging.getLogger(__name__)
 
-SENSITIVE_KEY_FRAGMENTS = (
+# Credentials never leave this client, signed in or not.
+SECRET_KEY_FRAGMENTS = (
     "password",
     "passphrase",
     "wpakey",
@@ -27,17 +29,23 @@ SENSITIVE_KEY_FRAGMENTS = (
     "cookie",
     "authorization",
     "auth",
-    "imei",
-    "imsi",
-    "iccid",
-    "msisdn",
-    "serial",
-    "mac",
-    "bssid",
     "private",
     "pin",
     "puk",
 )
+# Hardware and subscriber identifiers are shown to the signed-in owner but
+# masked in anything meant for sharing, such as the troubleshooting snapshot.
+IDENTIFIER_KEY_FRAGMENTS = (
+    "imei",
+    "imsi",
+    "iccid",
+    "msisdn",
+    "phonenumber",
+    "serial",
+    "mac",
+    "bssid",
+)
+IPV6_LIST_KEYS = frozenset({"ipv6", "ipv6address", "ipv6addresses", "ip6", "ipv6list"})
 
 SIGNAL_METRICS: tuple[dict[str, Any], ...] = (
     {
@@ -368,11 +376,15 @@ class UnifiedGatewayClient:
                 devices = _connected_devices_from_payload(payload)
                 if online_vendor_lookup:
                     await self._apply_online_vendor_lookup(devices)
+                reached = sum(1 for device in devices if device.get("reached_through"))
                 return {
                     "observed_at": utc_now().isoformat(),
                     "supported": True,
                     "source": path,
-                    "count": len(devices),
+                    # Entries the gateway itself lists; devices found only
+                    # through another entry's IPv6 addresses are counted apart.
+                    "count": len(devices) - reached,
+                    "reached_count": reached,
                     "online_vendor_lookup": online_vendor_lookup,
                     "devices": devices,
                 }
@@ -427,9 +439,8 @@ class UnifiedGatewayClient:
     async def device_details(self) -> dict[str, Any]:
         """Hardware, SIM, and clock details for the device card.
 
-        SIM and device identifiers are reduced to their last four characters
-        here, before they leave this client: enough to match a SIM against the
-        carrier's records, not enough to be useful to anyone else.
+        Identifiers are returned in full for the signed-in owner; anything
+        meant for sharing goes through redact_for_sharing first.
         """
         detection, payload = await self._fetch_unified_info()
         if payload is None:
@@ -448,16 +459,16 @@ class UnifiedGatewayClient:
             status = _bool_or_none(_find_mapping_value(sim_root, ("status",), exact=True))
             sim = {
                 "status": None if status is None else ("Active" if status else "Inactive"),
-                "iccid": _mask_identifier(
+                "iccid": _format_optional(
                     _find_mapping_value(sim_root, ("iccid",), exact=True)
                 ),
-                "imei": _mask_identifier(
+                "imei": _format_optional(
                     _find_mapping_value(sim_root, ("imei",), exact=True)
                 ),
-                "imsi": _mask_identifier(
+                "imsi": _format_optional(
                     _find_mapping_value(sim_root, ("imsi",), exact=True)
                 ),
-                "phone_number": _mask_identifier(
+                "phone_number": _format_optional(
                     _find_mapping_value(sim_root, ("msisdn",), exact=True)
                 ),
             }
@@ -502,7 +513,7 @@ class UnifiedGatewayClient:
                 "firmware": _format_optional(
                     _find_mapping_value(device, ("softwareversion",), exact=True)
                 ),
-                "serial": _mask_identifier(
+                "serial": _format_optional(
                     _find_mapping_value(device, ("serial", "serialnumber"), exact=True)
                 ),
                 "api_version": api_version,
@@ -1645,7 +1656,123 @@ def _connected_devices_from_payload(payload: Any) -> list[dict[str, Any]]:
             seen.add(str(identity_key))
             devices.append(device)
 
-    return devices
+    return _split_reached_devices(devices)
+
+
+def _split_reached_devices(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give addresses that belong to other devices rows of their own.
+
+    An EUI-64 address embeds the MAC of the interface that formed it. When one
+    on a gateway entry decodes to a different MAC than the entry's own, that
+    address belongs to another device whose traffic reaches the gateway through
+    the entry, as with a router or bridge in between. Random (privacy) addresses
+    carry no such link and stay with the entry that reported them.
+    """
+    by_mac = {device["mac_address"]: device for device in devices if device.get("mac_address")}
+    reached: dict[str, list[dict[str, Any]]] = {}
+    for device in devices:
+        own: list[dict[str, Any]] = []
+        for entry in device.get("ipv6_addresses") or []:
+            mac = entry.get("mac")
+            if not mac or mac == device.get("mac_address"):
+                own.append(entry)
+            elif mac in by_mac:
+                # Listed by the gateway in its own right; keep it there.
+                by_mac[mac].setdefault("ipv6_addresses", []).append(entry)
+            else:
+                reached.setdefault(device["id"], []).append(entry)
+        device["ipv6_addresses"] = own
+
+    result: list[dict[str, Any]] = []
+    for device in devices:
+        result.append(device)
+        children: dict[str, dict[str, Any]] = {}
+        for entry in reached.get(device["id"], []):
+            mac = entry["mac"]
+            child = children.get(mac)
+            if child is None:
+                child = {
+                    "id": _client_id(mac=mac, ip_address=None, hostname=None),
+                    "source": device.get("source"),
+                    "hostname": None,
+                    "ip_address": None,
+                    "mac_address": mac,
+                    "mac_oui": _mac_oui(mac),
+                    "interface": None,
+                    "ssid": None,
+                    "band": None,
+                    "rssi": None,
+                    "vendor": None,
+                    "model": None,
+                    "os": None,
+                    "ipv6_addresses": [],
+                    "reached_through": {
+                        "id": device["id"],
+                        "hostname": device.get("hostname"),
+                        "ip_address": device.get("ip_address"),
+                        "mac_address": device.get("mac_address"),
+                    },
+                }
+                child["identification"] = _identify_client(child)
+                children[mac] = child
+            child["ipv6_addresses"].append(entry)
+        result.extend(children.values())
+    return result
+
+
+def _client_ipv6_addresses(mapping: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every IPv6 address listed on a client entry, classified.
+
+    Walks the raw entry rather than flattened leaves, which cap lists at a
+    dozen items; a router in front of a LAN can carry many more.
+    """
+    raw: list[str] = []
+
+    def collect(value: Any, under_ipv6_key: bool) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                collect(child, under_ipv6_key or _normalize_key(key) in IPV6_LIST_KEYS)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child, under_ipv6_key)
+        elif under_ipv6_key and isinstance(value, str):
+            raw.extend(part for part in re.split(r"[\s,]+", value) if part)
+
+    collect(mapping, False)
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for text in raw:
+        entry = _classify_ipv6(text)
+        if entry and entry["address"] not in seen:
+            seen.add(entry["address"])
+            entries.append(entry)
+    return entries
+
+
+def _classify_ipv6(text: str) -> dict[str, Any] | None:
+    try:
+        address = ipaddress.IPv6Address(text.split("/", 1)[0].split("%", 1)[0])
+    except ValueError:
+        return None
+    if address.is_link_local:
+        scope = "link-local"
+    elif address in ipaddress.IPv6Network("fc00::/7"):
+        scope = "unique-local"
+    else:
+        scope = "global"
+    packed = address.packed
+    mac = None
+    if packed[11] == 0xFF and packed[12] == 0xFE:
+        # Modified EUI-64: the MAC with ff:fe in the middle and the
+        # universal/local bit inverted.
+        octets = (packed[8] ^ 0x02, packed[9], packed[10], packed[13], packed[14], packed[15])
+        mac = ":".join(f"{octet:02X}" for octet in octets)
+    return {
+        "address": str(address),
+        "scope": scope,
+        "kind": "eui64" if mac else "random",
+        "mac": mac,
+    }
 
 
 def _client_list_candidates(
@@ -1712,7 +1839,7 @@ def _client_from_mapping(
         "source": source,
         "hostname": hostname,
         "ip_address": ip_address,
-        "mac_address": _mask_mac(mac),
+        "mac_address": mac,
         "mac_oui": _mac_oui(mac),
         "interface": _string_or_none(
             _find_deep_value(mapping, CLIENT_FIELD_CANDIDATES["interface"])
@@ -1727,6 +1854,7 @@ def _client_from_mapping(
         "vendor": vendor,
         "model": model,
         "os": os_name,
+        "ipv6_addresses": _client_ipv6_addresses(mapping),
     }
     device["identification"] = _identify_client(device)
     return device
@@ -2072,7 +2200,7 @@ def _find_exact_value(
 
 
 def _redact_sensitive(value: Any, *, key: str = "") -> Any:
-    if _is_sensitive_key(key):
+    if _key_matches(key, SECRET_KEY_FRAGMENTS):
         return "[redacted]"
     if isinstance(value, dict):
         return {
@@ -2084,9 +2212,41 @@ def _redact_sensitive(value: Any, *, key: str = "") -> Any:
     return value
 
 
-def _is_sensitive_key(key: str) -> bool:
+def redact_for_sharing(value: Any, *, key: str = "") -> Any:
+    """Mask identifiers and addresses in a payload meant to leave the owner.
+
+    Credentials are dropped, identifiers keep their last four characters, MACs
+    keep their vendor prefix, and IPv6 addresses (which pin down the household's
+    delegated prefix) are dropped entirely.
+    """
     normalized = _normalize_key(key)
-    return any(fragment in normalized for fragment in SENSITIVE_KEY_FRAGMENTS)
+    # Flags such as gateway_password_configured say nothing secret.
+    if _key_matches(key, SECRET_KEY_FRAGMENTS) and not isinstance(value, (bool, type(None))):
+        return "[redacted]"
+    if "ipv6" in normalized and not isinstance(value, bool) and value is not None:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {
+            str(child_key): redact_for_sharing(child_value, key=str(child_key))
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_for_sharing(item, key=key) for item in value]
+    if (
+        _key_matches(key, IDENTIFIER_KEY_FRAGMENTS)
+        and not normalized.endswith("oui")
+        and isinstance(value, (str, int))
+        and not isinstance(value, bool)
+    ):
+        # Only MAC-named keys: a 15-digit IMEI also contains 12 hex digits.
+        mac = _normalize_mac(str(value)) if _key_matches(key, ("mac", "bssid")) else None
+        return _mask_mac(mac) if mac else _mask_identifier(value)
+    return value
+
+
+def _key_matches(key: str, fragments: tuple[str, ...]) -> bool:
+    normalized = _normalize_key(key)
+    return any(fragment in normalized for fragment in fragments)
 
 
 def _flatten_leaves(
