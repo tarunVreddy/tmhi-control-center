@@ -772,3 +772,35 @@ def test_redact_for_sharing_masks_identifiers_but_keeps_flags() -> None:
     assert redacted["wan_ipv6"] == "[redacted]"
     assert redacted["ipv6_addresses"] == "[redacted]"
     assert redacted["nested"][0]["bssid"] == "11:22:33:xx:xx:xx"
+
+
+@pytest.mark.asyncio
+async def test_vendor_lookup_spaces_requests_and_skips_random_macs(monkeypatch) -> None:
+    import tmhi_control_center.gateway as gateway_module
+
+    monkeypatch.setattr(gateway_module, "VENDOR_LOOKUP_INTERVAL_SECONDS", 0)
+    looked_up: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.macvendors.com":
+            looked_up.append(request.url.path)
+            return httpx.Response(200, text={"/3C-22-FB": "Apple", "/18-B4-30": "Nest Labs"}.get(request.url.path, ""))
+        return httpx.Response(404)
+
+    client = UnifiedGatewayClient(
+        "http://192.168.12.1:8080/TMI/v1", "admin", "secret", transport=httpx.MockTransport(handler)
+    )
+    devices = [
+        {"mac_oui": "3C:22:FB", "vendor": None},
+        {"mac_oui": "3C:22:FB", "vendor": None},
+        {"mac_oui": "18:B4:30", "vendor": None},
+        # Locally administered (randomized) MAC: no registry entry to find.
+        {"mac_oui": "76:AC:2B", "vendor": None},
+    ]
+    try:
+        await client._apply_online_vendor_lookup(devices)
+    finally:
+        await client.close()
+
+    assert looked_up == ["/3C-22-FB", "/18-B4-30"]
+    assert [device["vendor"] for device in devices] == ["Apple", "Apple", "Nest Labs", None]
