@@ -1142,3 +1142,26 @@ def test_events_endpoint_returns_at_most_ten_events(monkeypatch, tmp_path) -> No
 
     assert response.status_code == 200
     assert len(response.json()) == 10
+
+
+def test_request_logs_hide_api_keys_and_location(monkeypatch, tmp_path) -> None:
+    import logging
+
+    main = load_main(monkeypatch, tmp_path)
+    record = logging.LogRecord(
+        "httpx", logging.INFO, __file__, 1,
+        'HTTP Request: %s %s "%s %d %s"',
+        (
+            "GET",
+            "https://opencellid.org/cell/getInArea?key=pk.abc123&BBOX=40.1%2C-105.0%2C40.2%2C-104.9&limit=50",
+            "HTTP/1.1", 200, "OK",
+        ),
+        None,
+    )
+
+    assert main.RedactQueryValues().filter(record) is True
+    message = record.getMessage()
+    assert "pk.abc123" not in message
+    assert "40.1" not in message
+    assert "key=<redacted>" in message
+    assert "limit=50" in message

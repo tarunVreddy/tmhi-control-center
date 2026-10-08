@@ -74,6 +74,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class RedactQueryValues(logging.Filter):
+    """Hide API keys and location from httpx's per-request log lines.
+
+    httpx logs every URL at INFO, and OpenCellID lookups carry the API key and
+    a bounding box around the gateway in the query string.
+    """
+
+    PATTERN = re.compile(
+        r"(?i)\b(key|api_?key|token|access_token|bbox|lat|lon|lng|latitude|longitude)=[^&\s\"]*"
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        redacted = self.PATTERN.sub(r"\1=<redacted>", message)
+        if redacted != message:
+            record.msg, record.args = redacted, None
+        return True
+
+
+logging.getLogger("httpx").addFilter(RedactQueryValues())
+
 store = EventStore(
     settings.database_path,
     speed_test_retention_days=settings.speedtest_retention_days,
