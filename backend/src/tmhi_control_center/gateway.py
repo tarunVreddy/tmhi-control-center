@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import re
@@ -45,6 +46,7 @@ IDENTIFIER_KEY_FRAGMENTS = (
     "mac",
     "bssid",
 )
+VENDOR_LOOKUP_INTERVAL_SECONDS = 1.1
 IPV6_LIST_KEYS = frozenset({"ipv6", "ipv6address", "ipv6addresses", "ip6", "ipv6list"})
 
 SIGNAL_METRICS: tuple[dict[str, Any], ...] = (
@@ -901,9 +903,13 @@ class UnifiedGatewayClient:
             if device.get("vendor"):
                 continue
             oui = device.get("mac_oui")
-            if not isinstance(oui, str) or not oui:
+            if not isinstance(oui, str) or not oui or _is_locally_administered(oui):
                 continue
             if oui not in vendors_by_oui:
+                if vendors_by_oui:
+                    # macvendors.com's free API allows about one request a
+                    # second and answers faster ones with 429.
+                    await asyncio.sleep(VENDOR_LOOKUP_INTERVAL_SECONDS)
                 vendors_by_oui[oui] = await self._lookup_oui_vendor(oui)
             vendor = vendors_by_oui[oui]
             if vendor:
@@ -2045,6 +2051,14 @@ def _mask_mac(mac: str | None) -> str | None:
         return None
     parts = mac.split(":")
     return ":".join((*parts[:3], "xx", "xx", "xx"))
+
+
+def _is_locally_administered(mac_or_oui: str) -> bool:
+    """Randomized and virtual MACs set this bit; no vendor registry lists them."""
+    try:
+        return bool(int(mac_or_oui.split(":")[0], 16) & 0x02)
+    except ValueError:
+        return False
 
 
 def _mac_oui(mac: str | None) -> str | None:
