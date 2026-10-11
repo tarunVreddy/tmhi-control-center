@@ -22,6 +22,9 @@ const AIM_HISTORY_SAMPLES = 150;
 // aim by.
 const AIM_RADIO_ORDER = ["nr", "lte"];
 const AIM_METRIC_ORDER = ["sinr", "rsrp", "rsrq", "cqi", "rssi", "bars"];
+// The narrowest range each aiming chart spans. Gateways report whole numbers,
+// so without a floor a 1 dB wobble fills the chart and reads as a cliff.
+const AIM_MIN_CHART_SPAN = { sinr: 6, rsrp: 6, rsrq: 4, rssi: 6, cqi: 4, bars: 2 };
 const DEFAULT_MAP_CENTER = { latitude: 39.8283, longitude: -98.5795 };
 const DEFAULT_MAP_RADIUS_KM = 0.8;
 const MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -4263,11 +4266,11 @@ function renderAimMetrics() {
   }
 
   for (const key of keys) {
-    els.aimMetrics.append(aimMetricCard(current.get(key), state.aimTrend[key]));
+    els.aimMetrics.append(aimMetricCard(key, current.get(key), state.aimTrend[key]));
   }
 }
 
-function aimMetricCard(row, entry) {
+function aimMetricCard(key, row, entry) {
   const metric = row?.metric;
   const item = document.createElement("article");
   item.className = "mini-metric aim-metric";
@@ -4288,14 +4291,14 @@ function aimMetricCard(row, entry) {
   note.textContent = metric ? humanize(metric.rating || "") : "Not reported";
   reading.append(value, note);
 
-  item.append(label, reading, aimSparkline(entry));
+  item.append(label, reading, aimSparkline(entry, key));
   if (entry) {
     item.append(aimSparkLegend(entry));
   }
   return item;
 }
 
-function aimSparkline(entry) {
+function aimSparkline(entry, key) {
   const box = document.createElement("div");
   box.className = "aim-spark";
   const values = entry?.history || [];
@@ -4303,12 +4306,15 @@ function aimSparkline(entry) {
     return box;
   }
 
-  // Best and worst bound every reading in the window, so they set the scale.
+  // Best and worst bound every reading in the window, so they set the scale,
+  // widened to the metric's minimum span around their midpoint.
   const width = 100;
   const height = 40;
-  const padding = Math.max((entry.best - entry.worst) * 0.15, 0.5);
-  const high = entry.best + padding;
-  const low = entry.worst - padding;
+  const middle = (entry.best + entry.worst) / 2;
+  const minimumSpan = AIM_MIN_CHART_SPAN[key.split(":")[1]] || 2;
+  const halfSpan = Math.max((entry.best - entry.worst) * 0.65, minimumSpan / 2);
+  const high = middle + halfSpan;
+  const low = middle - halfSpan;
   const x = (index) => (values.length > 1 ? (index / (values.length - 1)) * width : width);
   const y = (value) => ((high - value) / (high - low)) * height;
   const level = (value, className) =>
