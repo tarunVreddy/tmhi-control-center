@@ -1644,7 +1644,13 @@ function renderTelemetryTrends() {
       [
         { key: "temperature", label: "Gateway", className: "chart-series--thermal", read: (point) => point.system?.temperature_c },
       ],
-      { unit: "C", decimals: 1, markers, emptyText: "Temperature history will appear after two sensor samples." }
+      {
+        unit: "C",
+        decimals: 1,
+        markers,
+        better: null,
+        emptyText: "Temperature history will appear after two sensor samples.",
+      }
     );
   } else {
     replaceChildren(els.temperatureTrendChart);
@@ -2822,7 +2828,11 @@ function renderLineChart(container, points, seriesDefinitions, options) {
         })
         .filter((item) => Number.isFinite(item.time) && Number.isFinite(item.value)),
     }))
-    .filter((definition) => definition.values.length);
+    .filter((definition) => definition.values.length)
+    .map((definition) => ({
+      ...definition,
+      levels: chartLevels(definition.values, options.better),
+    }));
   if (!series.length) {
     container.append(emptyNode(options.emptyText));
     return;
@@ -2832,12 +2842,19 @@ function renderLineChart(container, points, seriesDefinitions, options) {
   legend.className = "chart-legend";
   for (const definition of series) {
     const item = document.createElement("span");
-    item.className = definition.className;
-    const marker = document.createElement("i");
-    const latest = definition.values[definition.values.length - 1].value;
-    const textNode = document.createElement("span");
-    textNode.textContent = `${definition.label} ${formatChartNumber(latest, options.decimals)} ${options.unit}`;
-    item.append(marker, textNode);
+    item.className = `chart-legend-series ${definition.className}`;
+    const name = document.createElement("strong");
+    name.textContent = definition.label;
+    item.append(document.createElement("i"), name);
+    for (const level of definition.levels) {
+      const key = document.createElement("span");
+      key.className = `chart-level-key chart-level-key--${level.kind}`;
+      key.append(
+        document.createElement("b"),
+        `${level.label} ${formatChartNumber(level.value, options.decimals)}`,
+      );
+      item.append(key);
+    }
     legend.append(item);
   }
 
@@ -2912,6 +2929,22 @@ function renderLineChart(container, points, seriesDefinitions, options) {
     svg.append(group);
   }
 
+  // Level lines go beneath every series so none of them hides a reading.
+  for (const definition of series) {
+    for (const level of definition.levels) {
+      const levelY = y(level.value);
+      svg.append(
+        svgElement("line", {
+          x1: margin.left,
+          y1: levelY,
+          x2: width - margin.right,
+          y2: levelY,
+          class: `chart-level chart-level--${level.kind} ${definition.className}`,
+        })
+      );
+    }
+  }
+
   for (const definition of series) {
     const path = definition.values
       .map((item, index) => `${index ? "L" : "M"} ${x(item.time).toFixed(2)} ${y(item.value).toFixed(2)}`)
@@ -2932,6 +2965,22 @@ function renderLineChart(container, points, seriesDefinitions, options) {
   }
 
   container.append(legend, svg);
+}
+
+// The reference levels drawn across a chart for one series: the latest reading
+// and the range's best and worst. better is "higher", "lower", or null for a
+// reading like temperature where neither end is better, which gets High/Low.
+function chartLevels(values, better = "higher") {
+  const readings = values.map((item) => item.value);
+  const high = Math.max(...readings);
+  const low = Math.min(...readings);
+  const [best, worst] = better === "lower" ? [low, high] : [high, low];
+  const named = better ? ["Best", "Worst"] : ["High", "Low"];
+  return [
+    { kind: "now", label: "Now", value: readings[readings.length - 1] },
+    { kind: "dash", label: named[0], value: better ? best : high },
+    { kind: "dot", label: named[1], value: better ? worst : low },
+  ];
 }
 
 function svgElement(name, attributes = {}) {
