@@ -1763,6 +1763,40 @@ summary:focus-visible {
   background: currentColor;
 }
 
+.chart-legend .chart-legend-series {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.chart-legend-series strong {
+  font-weight: 800;
+}
+
+.chart-level-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-level-key b {
+  width: 14px;
+  border-top: 2px solid currentColor;
+}
+
+.chart-level-key--now b {
+  opacity: 0.5;
+}
+
+.chart-level-key--dash b {
+  border-top-style: dashed;
+}
+
+.chart-level-key--dot b {
+  border-top-style: dotted;
+}
+
 .line-chart {
   width: 100%;
   height: auto;
@@ -1790,6 +1824,27 @@ summary:focus-visible {
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+}
+
+.chart-level {
+  stroke: currentColor;
+  stroke-width: 1.25;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-level--now {
+  opacity: 0.35;
+}
+
+.chart-level--dash {
+  stroke-dasharray: 8 5;
+}
+
+.chart-level--dot {
+  stroke-width: 1.75;
+  stroke-dasharray: 1 4;
+  stroke-linecap: round;
 }
 
 .chart-latest {
