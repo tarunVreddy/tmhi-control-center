@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import logging
 import re
+import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -16,6 +17,10 @@ from .models import GatewayDetection, RebootResult, utc_now
 
 
 logger = logging.getLogger(__name__)
+
+# How long aiming leaves the cell endpoint alone after a fresh login fails to
+# read it, so a bad password or an unsupported gateway is not hit every poll.
+AIM_CELL_RETRY_SECONDS = 60.0
 
 # Credentials never leave this client, signed in or not.
 SECRET_KEY_FRAGMENTS = (
@@ -264,12 +269,17 @@ class UnifiedGatewayClient:
             },
             transport=transport,
         )
+        self._aim_token: str | None = None
+        self._aim_token_lock = asyncio.Lock()
+        self._aim_cell_retry_at = 0.0
 
     async def close(self) -> None:
         await self._client.aclose()
 
     def set_password(self, password: str) -> None:
         self._password = password
+        self._aim_token = None
+        self._aim_cell_retry_at = 0.0
 
     async def detect(self) -> GatewayDetection:
         unified = await self._detect_unified()
@@ -403,8 +413,9 @@ class UnifiedGatewayClient:
 
         Deliberately avoids overview(): that authenticates on every call, and
         aiming polls every couple of seconds, which would put a login on the
-        gateway many times a minute. The signal endpoint needs no token, so
-        aiming adds no authentication traffic at all.
+        gateway many times a minute. The signal endpoint needs no token. CQI
+        only comes from the cell endpoint, which does, so that read reuses one
+        token across polls (see _aiming_cell_payload).
         """
         errors: list[str] = []
         for base_url in self._ordered_tmi_base_urls():
@@ -435,11 +446,43 @@ class UnifiedGatewayClient:
                     continue
 
                 self._active_tmi_base_url = base_url
-                return _build_signal_snapshot(payload)
+                cell_payload = await self._aiming_cell_payload()
+                return _build_signal_snapshot(payload, cell_payload)
 
         raise GatewayUnavailableError(
             _summarize_errors(errors, "Signal API was not reachable")
         )
+
+    async def _aiming_cell_payload(self) -> dict[str, Any] | None:
+        """Cell telemetry for the aiming view, or None to go without it.
+
+        The token is kept between reads and replaced only when a read with it
+        fails, so a session logs in once instead of every two seconds. If a
+        fresh token fails as well, the endpoint is left alone for
+        AIM_CELL_RETRY_SECONDS and aiming carries on with login-free metrics.
+        """
+        if not self._password or time.monotonic() < self._aim_cell_retry_at:
+            return None
+
+        async with self._aim_token_lock:
+            for _ in range(2):
+                fresh = self._aim_token is None
+                try:
+                    if fresh:
+                        self._aim_token = await self.authenticate()
+                    _, payload = await self._fetch_authenticated_json(
+                        self._aim_token,
+                        self.CELL_PATHS,
+                        label="Cell telemetry",
+                    )
+                    return payload
+                except GatewayError as exc:
+                    self._aim_token = None
+                    if fresh:
+                        logger.debug("Aiming cell telemetry is unavailable: %s", exc)
+                        break
+            self._aim_cell_retry_at = time.monotonic() + AIM_CELL_RETRY_SECONDS
+            return None
 
     async def device_details(self) -> dict[str, Any]:
         """Hardware, SIM, and clock details for the device card.
@@ -1018,14 +1061,18 @@ def _build_unified_overview(
     }
 
 
-def _build_signal_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+def _build_signal_snapshot(
+    payload: dict[str, Any],
+    cell_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Shape a signal-only payload the same way the dashboard shapes an overview.
 
     Scoring and metric selection are shared with _build_unified_overview so the
     aiming view and the dashboard cannot disagree about the same reading.
     """
     safe = _redact_sensitive(payload)
-    radios = _radio_summaries(safe, None)
+    safe_cell = _redact_sensitive(cell_payload) if cell_payload else None
+    radios = _radio_summaries(safe, safe_cell)
     signal = _signal_summary(list(_flatten_leaves(safe)))
 
     scores = [

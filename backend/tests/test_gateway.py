@@ -833,3 +833,138 @@ async def test_vendor_lookup_spaces_requests_and_skips_random_macs(monkeypatch) 
 
     assert looked_up == ["/3C-22-FB", "/18-B4-30"]
     assert [device["vendor"] for device in devices] == ["Apple", "Apple", "Nest Labs", None]
+
+
+AIM_SIGNAL = {
+    "signal": {
+        "4g": {"bands": ["b66"], "bars": 4, "rsrp": -95, "rsrq": -11, "sinr": 9, "rssi": -78},
+        "5g": {"bands": ["n41"], "bars": 5, "rsrp": -84, "rsrq": -10, "sinr": 18, "rssi": -70},
+        "generic": {"registration": "registered"},
+    }
+}
+AIM_CELL = {"cell": {"4g": {"cqi": 10}, "5g": {"cqi": 13}}}
+
+
+def aiming_client(handler, password: str = "secret") -> UnifiedGatewayClient:
+    return UnifiedGatewayClient(
+        "http://192.168.12.1:8080/TMI/v1",
+        "admin",
+        password,
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def metric_keys(snapshot: dict, radio_key: str) -> set[str]:
+    radio = next(radio for radio in snapshot["radios"] if radio["key"] == radio_key)
+    return {metric["key"] for metric in radio["metrics"]}
+
+
+@pytest.mark.asyncio
+async def test_aiming_reads_cqi_with_one_login_across_polls() -> None:
+    logins = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal logins
+        if request.url.path.endswith("/auth/login"):
+            logins += 1
+            return httpx.Response(200, json={"auth": {"token": "aim-token"}})
+        if request.url.path.endswith("/gateway/"):
+            assert request.url.params["get"] == "signal"
+            assert "Authorization" not in request.headers
+            return httpx.Response(200, json=AIM_SIGNAL)
+        if request.url.path.endswith("/network/telemetry/"):
+            assert request.url.params["get"] == "cell"
+            assert request.headers["Authorization"] == "Bearer aim-token"
+            return httpx.Response(200, json=AIM_CELL)
+        return httpx.Response(404)
+
+    client = aiming_client(handler)
+    try:
+        for _ in range(3):
+            snapshot = await client.signal_snapshot()
+    finally:
+        await client.close()
+
+    assert logins == 1
+    assert "cqi" in metric_keys(snapshot, "nr")
+    assert "cqi" in metric_keys(snapshot, "lte")
+
+
+@pytest.mark.asyncio
+async def test_aiming_logs_in_again_only_when_its_token_is_refused() -> None:
+    logins = 0
+    valid_token = "first"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal logins
+        if request.url.path.endswith("/auth/login"):
+            logins += 1
+            return httpx.Response(200, json={"auth": {"token": valid_token}})
+        if request.url.path.endswith("/gateway/"):
+            return httpx.Response(200, json=AIM_SIGNAL)
+        if request.url.path.endswith("/network/telemetry/"):
+            if request.headers["Authorization"] != f"Bearer {valid_token}":
+                return httpx.Response(401)
+            return httpx.Response(200, json=AIM_CELL)
+        return httpx.Response(404)
+
+    client = aiming_client(handler)
+    try:
+        await client.signal_snapshot()
+        valid_token = "second"
+        snapshot = await client.signal_snapshot()
+        await client.signal_snapshot()
+    finally:
+        await client.close()
+
+    assert logins == 2
+    assert "cqi" in metric_keys(snapshot, "nr")
+
+
+@pytest.mark.asyncio
+async def test_aiming_backs_off_the_cell_endpoint_when_a_fresh_login_cannot_read_it() -> None:
+    authenticated: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/login"):
+            authenticated.append("login")
+            return httpx.Response(200, json={"auth": {"token": "aim-token"}})
+        if request.url.path.endswith("/network/telemetry/"):
+            authenticated.append("cell")
+            return httpx.Response(403)
+        if request.url.path.endswith("/gateway/"):
+            return httpx.Response(200, json=AIM_SIGNAL)
+        return httpx.Response(404)
+
+    client = aiming_client(handler)
+    try:
+        first = await client.signal_snapshot()
+        requests_after_first = len(authenticated)
+        second = await client.signal_snapshot()
+    finally:
+        await client.close()
+
+    assert authenticated.count("login") == 1
+    assert len(authenticated) == requests_after_first
+    for snapshot in (first, second):
+        assert "sinr" in metric_keys(snapshot, "nr")
+        assert "cqi" not in metric_keys(snapshot, "nr")
+
+
+@pytest.mark.asyncio
+async def test_aiming_without_a_saved_password_never_logs_in() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert not request.url.path.endswith("/auth/login")
+        assert not request.url.path.endswith("/network/telemetry/")
+        if request.url.path.endswith("/gateway/"):
+            return httpx.Response(200, json=AIM_SIGNAL)
+        return httpx.Response(404)
+
+    client = aiming_client(handler, password="")
+    try:
+        snapshot = await client.signal_snapshot()
+    finally:
+        await client.close()
+
+    assert "sinr" in metric_keys(snapshot, "nr")
+    assert "cqi" not in metric_keys(snapshot, "nr")
