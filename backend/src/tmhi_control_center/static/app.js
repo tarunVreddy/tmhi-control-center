@@ -12,6 +12,16 @@ const VIEW_STORAGE_KEY = "tmhi-control-center-view";
 const DEFAULT_VIEW = "dashboard";
 const AIM_POLL_INTERVAL_MS = 2000;
 const AIM_MAX_CONSECUTIVE_ERRORS = 5;
+// Readings kept per metric for the aiming charts: five minutes at one every 2s.
+// Best and worst still cover the whole session.
+const AIM_HISTORY_SAMPLES = 150;
+// Aiming lists metrics by how much they matter for placement. 5G carries most
+// of the traffic, so it leads its LTE anchor. Within a radio, SINR tracks
+// throughput and responds most to orientation, RSRP follows placement and
+// height, RSRQ and CQI confirm a change, and RSSI and bars are too coarse to
+// aim by.
+const AIM_RADIO_ORDER = ["nr", "lte"];
+const AIM_METRIC_ORDER = ["sinr", "rsrp", "rsrq", "cqi", "rssi", "bars"];
 const DEFAULT_MAP_CENTER = { latitude: 39.8283, longitude: -98.5795 };
 const DEFAULT_MAP_RADIUS_KM = 0.8;
 const MAP_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
@@ -121,7 +131,6 @@ const ids = [
   "aimStatusMessage",
   "aimSummary",
   "aimToggleButton",
-  "aimTrend",
   "aimUpdatedTag",
   "advancedCellTag",
   "advancedLabEnabled",
@@ -4133,32 +4142,64 @@ function aimMetricRows(snapshot) {
   return rows;
 }
 
+function aimMetricKey(radio, metric) {
+  return `${radio.key}:${metric.key}`;
+}
+
+function aimMetricRank(key) {
+  const [radioKey, metricKey] = key.split(":");
+  const rank = (order, value) => {
+    const index = order.indexOf(value);
+    return index === -1 ? order.length : index;
+  };
+  return (
+    rank(AIM_RADIO_ORDER, radioKey) * (AIM_METRIC_ORDER.length + 1) +
+    rank(AIM_METRIC_ORDER, metricKey)
+  );
+}
+
 function recordAimSample(snapshot) {
+  const seen = new Set();
   for (const { radio, metric } of aimMetricRows(snapshot)) {
     if (!Number.isFinite(metric.value)) {
       continue;
     }
-    const key = `${radio.key}:${metric.key}`;
+    const key = aimMetricKey(radio, metric);
+    seen.add(key);
     const entry = state.aimTrend[key] || {
-      label: `${radio.label} ${metric.label || humanize(metric.key)}`,
-      unit: metric.unit || "",
       best: metric.value,
       worst: metric.value,
       samples: 0,
+      history: [],
     };
     // Every metric here reads better as it rises, so best is simply the maximum.
+    entry.label = `${radio.label} ${metric.label || humanize(metric.key)}`;
+    entry.unit = metric.unit || "";
     entry.current = metric.value;
     entry.best = Math.max(entry.best, metric.value);
     entry.worst = Math.min(entry.worst, metric.value);
     entry.samples += 1;
+    entry.history.push(metric.value);
     state.aimTrend[key] = entry;
+  }
+
+  // A metric that drops out, such as 5G losing its anchor mid-turn, leaves a
+  // gap in its line instead of a straight join across the missing readings.
+  for (const [key, entry] of Object.entries(state.aimTrend)) {
+    if (!seen.has(key)) {
+      entry.current = null;
+      entry.history.push(null);
+    }
+    if (entry.history.length > AIM_HISTORY_SAMPLES) {
+      entry.history.splice(0, entry.history.length - AIM_HISTORY_SAMPLES);
+    }
   }
 }
 
 function resetAimSession() {
   state.aimTrend = {};
-  renderAimTrend();
-  setAimStatus("Session reset. Best and worst start again from the next reading.", "success");
+  renderAimMetrics();
+  setAimStatus("Session reset. History, best, and worst start again from the next reading.", "success");
 }
 
 function formatAimNumber(value, unit) {
@@ -4185,7 +4226,8 @@ function renderAim() {
   setText(els.aimMeterLabel, quality);
   setText(
     els.aimSummary,
-    "Move or rotate the gateway and watch these values respond. Readings update every 2 seconds.",
+    "Move or rotate the gateway and watch the lines respond. Each chart shows the last " +
+      "5 minutes, with dashed lines at the best and worst readings this session.",
   );
 
   const observed = new Date(snapshot.observed_at);
@@ -4195,60 +4237,139 @@ function renderAim() {
     "muted",
   );
 
-  replaceChildren(els.aimMetrics);
-  const rows = aimMetricRows(snapshot);
-  if (!rows.length) {
-    els.aimMetrics.append(emptyNode("The gateway returned no signal metrics."));
-  } else {
-    for (const { radio, metric } of rows) {
-      const item = document.createElement("article");
-      item.className = `mini-metric mini-metric--${toneFromQuality(metric.rating)}`;
-
-      const label = document.createElement("span");
-      label.textContent = `${radio.label} ${metric.label || humanize(metric.key)}`;
-
-      const value = document.createElement("strong");
-      value.textContent = metric.display || formatValue(metric.value);
-
-      const note = document.createElement("small");
-      note.textContent = metric.rating ? humanize(metric.rating) : "";
-
-      item.append(label, value, note);
-      els.aimMetrics.append(item);
-    }
-  }
-
-  renderAimTrend();
+  renderAimMetrics();
 }
 
-function renderAimTrend() {
-  replaceChildren(els.aimTrend);
-  const keys = Object.keys(state.aimTrend);
+function renderAimMetrics() {
+  replaceChildren(els.aimMetrics);
+  const current = new Map(
+    aimMetricRows(state.aimSnapshot).map((row) => [aimMetricKey(row.radio, row.metric), row]),
+  );
+  // Metrics that dropped out this session stay in place, so a lost 5G reading
+  // keeps its history and best on screen and no card shifts position.
+  const keys = [
+    ...current.keys(),
+    ...Object.keys(state.aimTrend).filter((key) => !current.has(key)),
+  ].sort((a, b) => aimMetricRank(a) - aimMetricRank(b));
   if (!keys.length) {
-    els.aimTrend.append(emptyNode("Best and worst readings appear once sampling starts."));
+    els.aimMetrics.append(
+      emptyNode(
+        state.aimSnapshot
+          ? "The gateway returned no signal metrics."
+          : "Readings and their history appear once sampling starts.",
+      ),
+    );
     return;
   }
 
   for (const key of keys) {
-    const entry = state.aimTrend[key];
-    const item = document.createElement("article");
-    item.className = "mini-metric";
-
-    const label = document.createElement("span");
-    label.textContent = `${entry.label} best`;
-
-    const value = document.createElement("strong");
-    value.textContent = formatAimNumber(entry.best, entry.unit);
-
-    const note = document.createElement("small");
-    note.textContent =
-      `now ${formatAimNumber(entry.current, entry.unit)} \u00b7 ` +
-      `worst ${formatAimNumber(entry.worst, entry.unit)} \u00b7 ` +
-      `${entry.samples} sample${entry.samples === 1 ? "" : "s"}`;
-
-    item.append(label, value, note);
-    els.aimTrend.append(item);
+    els.aimMetrics.append(aimMetricCard(current.get(key), state.aimTrend[key]));
   }
+}
+
+function aimMetricCard(row, entry) {
+  const metric = row?.metric;
+  const item = document.createElement("article");
+  item.className = "mini-metric aim-metric";
+  if (metric) {
+    item.classList.add(`mini-metric--${toneFromQuality(metric.rating)}`);
+  }
+
+  const label = document.createElement("span");
+  label.textContent = metric
+    ? `${row.radio.label} ${metric.label || humanize(metric.key)}`
+    : entry.label;
+
+  const reading = document.createElement("div");
+  reading.className = "aim-metric-reading";
+  const value = document.createElement("strong");
+  value.textContent = metric ? metric.display || formatValue(metric.value) : "--";
+  const note = document.createElement("small");
+  note.textContent = metric ? humanize(metric.rating || "") : "Not reported";
+  reading.append(value, note);
+
+  item.append(label, reading, aimSparkline(entry));
+  if (entry) {
+    item.append(aimSparkLegend(entry));
+  }
+  return item;
+}
+
+function aimSparkline(entry) {
+  const box = document.createElement("div");
+  box.className = "aim-spark";
+  const values = entry?.history || [];
+  if (!values.some(Number.isFinite)) {
+    return box;
+  }
+
+  // Best and worst bound every reading in the window, so they set the scale.
+  const width = 100;
+  const height = 40;
+  const padding = Math.max((entry.best - entry.worst) * 0.15, 0.5);
+  const high = entry.best + padding;
+  const low = entry.worst - padding;
+  const x = (index) => (values.length > 1 ? (index / (values.length - 1)) * width : width);
+  const y = (value) => ((high - value) / (high - low)) * height;
+  const level = (value, className) =>
+    svgElement("line", { x1: 0, x2: width, y1: y(value), y2: y(value), class: className });
+
+  // preserveAspectRatio="none" stretches the chart to the card; the strokes
+  // are non-scaling, and the dot is HTML so it stays round.
+  const svg = svgElement("svg", {
+    viewBox: `0 0 ${width} ${height}`,
+    preserveAspectRatio: "none",
+    "aria-hidden": "true",
+  });
+  svg.append(level(entry.best, "aim-spark-best"), level(entry.worst, "aim-spark-worst"));
+  const live = Number.isFinite(entry.current);
+  if (live) {
+    svg.append(level(entry.current, "aim-spark-now"));
+  }
+
+  let path = "";
+  let penDown = false;
+  values.forEach((value, index) => {
+    if (!Number.isFinite(value)) {
+      penDown = false;
+      return;
+    }
+    path += `${penDown ? "L" : "M"}${x(index).toFixed(2)} ${y(value).toFixed(2)} `;
+    penDown = true;
+  });
+  svg.append(svgElement("path", { d: path.trim(), class: "aim-spark-history" }));
+  box.append(svg);
+
+  if (live) {
+    // The newest reading is always the last point, at the right edge.
+    const dot = document.createElement("i");
+    dot.className = "aim-spark-dot";
+    dot.style.top = `${(y(entry.current) / height) * 100}%`;
+    box.append(dot);
+  }
+  return box;
+}
+
+function aimSparkLegend(entry) {
+  const legend = document.createElement("div");
+  legend.className = "aim-spark-legend";
+  const keys = [
+    ["now", "Now", entry.current],
+    ["best", "Best", entry.best],
+    ["worst", "Worst", entry.worst],
+  ];
+  for (const [kind, text, value] of keys) {
+    const key = document.createElement("span");
+    key.className = `aim-key aim-key--${kind}`;
+    const label = document.createElement("span");
+    label.className = "aim-key-label";
+    label.append(document.createElement("i"), text);
+    const reading = document.createElement("b");
+    reading.textContent = formatAimNumber(value, "");
+    key.append(label, reading);
+    legend.append(key);
+  }
+  return legend;
 }
 
 function setAimStatus(message, tone) {

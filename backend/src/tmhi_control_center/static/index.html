@@ -867,39 +867,29 @@
               <div class="section-heading">
                 <div>
                   <p class="eyebrow">Cellular Radio</p>
-                  <h2 id="aimLiveHeading">Signal Right Now</h2>
+                  <h2 id="aimLiveHeading">Live Signal</h2>
                 </div>
-                <span id="aimUpdatedTag" class="tag tag--muted">No samples yet</span>
+                <div class="section-actions">
+                  <span id="aimUpdatedTag" class="tag tag--muted">No samples yet</span>
+                  <button id="aimResetButton" class="button button--secondary button--compact" type="button">
+                    Reset Session
+                  </button>
+                </div>
               </div>
 
-              <div class="signal-layout">
+              <div class="signal-layout aim-layout">
                 <div id="aimMeter" class="signal-ring" style="--score: 0">
                   <div>
                     <strong id="aimMeterValue">--</strong>
                     <span id="aimMeterLabel">Unknown</span>
                   </div>
                 </div>
-                <div>
-                  <p id="aimSummary" class="signal-summary">
-                    Select Start Aiming to read the gateway every 2 seconds, then move or
-                    rotate it and watch the values respond.
-                  </p>
-                  <div id="aimMetrics" class="mini-metric-grid"></div>
-                </div>
+                <p id="aimSummary" class="signal-summary">
+                  Select Start Aiming to read the gateway every 2 seconds, then move or
+                  rotate it and watch the values respond.
+                </p>
               </div>
-            </section>
-
-            <section class="workspace-section" aria-labelledby="aimTrendHeading">
-              <div class="section-heading">
-                <div>
-                  <p class="eyebrow">This Session</p>
-                  <h2 id="aimTrendHeading">Best and Worst Seen</h2>
-                </div>
-                <button id="aimResetButton" class="button button--secondary button--compact" type="button">
-                  Reset Session
-                </button>
-              </div>
-              <div id="aimTrend" class="mini-metric-grid"></div>
+              <div id="aimMetrics" class="aim-metric-grid"></div>
               <div id="aimStatusMessage" class="message" role="status" aria-live="polite"></div>
             </section>
           </section>
